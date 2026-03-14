@@ -1,9 +1,8 @@
 """Data fetching module for Swedish stocks and indexes via yfinance."""
 
-import yfinance as yf
-import pandas as pd
-from typing import Optional
 
+import pandas as pd
+import yfinance as yf
 
 # Common Swedish stock tickers
 SWEDISH_INDEXES = {
@@ -120,7 +119,7 @@ class StockDataFetcher:
 
         return df
 
-    def get_latest_price(self, ticker: str) -> Optional[float]:
+    def get_latest_price(self, ticker: str) -> float | None:
         """Get the most recent closing price for a ticker."""
         try:
             df = self.fetch(ticker)

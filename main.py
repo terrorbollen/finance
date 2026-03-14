@@ -5,19 +5,19 @@ import argparse
 import sys
 from datetime import datetime
 
+from backtesting import Backtester
 from data.fetcher import StockDataFetcher
-from signals.generator import SignalGenerator
-from signals.calibration import ConfidenceCalibrator
 from models.training import ModelTrainer
 from models.walk_forward import WalkForwardTrainer
-from backtesting import Backtester
+from signals.calibration import ConfidenceCalibrator
+from signals.generator import SignalGenerator
 
 
 def cmd_analyze(args):
     """Analyze a single ticker and generate a signal."""
     print(f"\nAnalyzing {args.ticker}...")
 
-    generator = SignalGenerator()
+    generator = SignalGenerator(min_confidence=args.min_confidence)
     try:
         signal = generator.generate(args.ticker)
         print(signal)
@@ -28,16 +28,12 @@ def cmd_analyze(args):
 
 def cmd_scan(args):
     """Scan multiple tickers and generate signals."""
-    if args.tickers:
-        tickers = args.tickers
-    else:
-        # Default: scan major Swedish stocks
-        tickers = list(StockDataFetcher.list_swedish_tickers().keys())[:10]
+    tickers = args.tickers or list(StockDataFetcher.list_swedish_tickers().keys())[:10]
 
     print(f"\nScanning {len(tickers)} tickers...")
     print("-" * 50)
 
-    generator = SignalGenerator()
+    generator = SignalGenerator(min_confidence=args.min_confidence)
     signals = generator.scan(tickers)
 
     if not signals:
@@ -134,7 +130,7 @@ def cmd_backtest(args):
     # Parse horizons
     horizons = args.horizons if args.horizons else [1, 2, 3, 4, 5, 6, 7]
 
-    backtester = Backtester()
+    backtester = Backtester(commission_pct=args.commission)
     try:
         result = backtester.run(
             ticker=args.ticker,
@@ -164,14 +160,9 @@ def cmd_backtest(args):
 
 def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
-    import json
     import numpy as np
 
-    if args.tickers:
-        tickers = args.tickers
-    else:
-        # Default: use major Swedish stocks
-        tickers = ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
+    tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
 
     print(f"\nCalibrating confidence using {len(tickers)} tickers...")
     print(f"Horizon: {args.horizon} days")
@@ -250,6 +241,10 @@ Examples:
         "analyze", help="Analyze a single ticker"
     )
     analyze_parser.add_argument("ticker", help="Stock ticker symbol")
+    analyze_parser.add_argument(
+        "--min-confidence", type=float, default=None, dest="min_confidence",
+        help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
+    )
     analyze_parser.set_defaults(func=cmd_analyze)
 
     # scan command
@@ -258,6 +253,10 @@ Examples:
     )
     scan_parser.add_argument(
         "tickers", nargs="*", help="Ticker symbols (default: Swedish stocks)"
+    )
+    scan_parser.add_argument(
+        "--min-confidence", type=float, default=None, dest="min_confidence",
+        help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
     )
     scan_parser.set_defaults(func=cmd_scan)
 
@@ -316,6 +315,10 @@ Examples:
     backtest_parser.add_argument(
         "--output",
         help="Output file path for results (JSON or CSV)",
+    )
+    backtest_parser.add_argument(
+        "--commission", type=float, default=0.001,
+        help="One-way commission as decimal (default: 0.001 = 0.1%%)",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
 

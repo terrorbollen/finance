@@ -1,14 +1,13 @@
 """Metrics calculation for backtesting results."""
 
+
 import numpy as np
-from collections import defaultdict
-from typing import Optional
 
 from backtesting.results import (
-    Signal,
-    HorizonPrediction,
-    HorizonMetrics,
     ClassMetrics,
+    HorizonMetrics,
+    HorizonPrediction,
+    Signal,
 )
 
 
@@ -19,6 +18,7 @@ class MetricsCalculator:
         self,
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
+        commission_pct: float = 0.001,
     ):
         """
         Initialize metrics calculator.
@@ -26,9 +26,11 @@ class MetricsCalculator:
         Args:
             buy_threshold: Price change threshold for BUY signal (default 2%)
             sell_threshold: Price change threshold for SELL signal (default -2%)
+            commission_pct: One-way commission as decimal (default 0.1% = 0.001)
         """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        self.commission_pct = commission_pct
 
     def calculate_horizon_metrics(
         self,
@@ -68,7 +70,7 @@ class MetricsCalculator:
         price_mae, price_rmse = self._calculate_price_metrics(completed)
 
         # Calculate simulated trading returns
-        win_rate, total_return = self._calculate_trading_metrics(completed)
+        trading = self._calculate_trading_metrics(completed)
 
         return HorizonMetrics(
             horizon_days=horizon,
@@ -78,8 +80,7 @@ class MetricsCalculator:
             calibration=calibration,
             price_mae=price_mae,
             price_rmse=price_rmse,
-            win_rate=win_rate,
-            total_return=total_return,
+            **trading,
         )
 
     def _calculate_accuracy(self, predictions: list[HorizonPrediction]) -> float:
@@ -173,10 +174,12 @@ class MetricsCalculator:
         errors = [
             abs(p.predicted_price_change - p.actual_price_change)
             for p in with_prices
+            if p.actual_price_change is not None
         ]
         squared_errors = [
             (p.predicted_price_change - p.actual_price_change) ** 2
             for p in with_prices
+            if p.actual_price_change is not None
         ]
 
         mae = np.mean(errors)
@@ -186,42 +189,98 @@ class MetricsCalculator:
 
     def _calculate_trading_metrics(
         self, predictions: list[HorizonPrediction]
-    ) -> tuple[float, float]:
+    ) -> dict[str, float]:
         """
-        Calculate simulated trading metrics.
+        Calculate simulated trading metrics including risk-adjusted returns.
 
-        Simple strategy:
+        Strategy:
         - BUY signal: go long
         - SELL signal: go short
         - HOLD signal: no position
 
+        Commission is applied as a round-trip cost (entry + exit).
+
         Returns:
-            Tuple of (win_rate, total_return_percentage)
+            Dict of trading metrics for HorizonMetrics fields.
         """
-        trades = []
+        gross_returns: list[float] = []
+        net_returns: list[float] = []
+        round_trip_cost = 2 * self.commission_pct * 100  # convert to percentage
 
         for p in predictions:
             if p.actual_price_change is None:
                 continue
 
             if p.predicted_signal == Signal.BUY:
-                # Long position: profit if price goes up
-                trade_return = p.actual_price_change
-                trades.append(trade_return)
+                gross = p.actual_price_change
             elif p.predicted_signal == Signal.SELL:
-                # Short position: profit if price goes down
-                trade_return = -p.actual_price_change
-                trades.append(trade_return)
-            # HOLD: no trade
+                gross = -p.actual_price_change
+            else:
+                continue  # HOLD: no trade
 
-        if not trades:
-            return 0.0, 0.0
+            gross_returns.append(gross)
+            net_returns.append(gross - round_trip_cost)
 
-        wins = sum(1 for t in trades if t > 0)
-        win_rate = wins / len(trades)
-        total_return = sum(trades)
+        empty: dict[str, float] = {
+            "win_rate": 0.0,
+            "total_return": 0.0,
+            "net_total_return": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "calmar_ratio": 0.0,
+        }
+        if not gross_returns:
+            return empty
 
-        return win_rate, total_return
+        wins = sum(1 for r in gross_returns if r > 0)
+        sharpe, sortino, max_dd, calmar = self._calculate_risk_metrics(net_returns)
+
+        return {
+            "win_rate": wins / len(gross_returns),
+            "total_return": float(sum(gross_returns)),
+            "net_total_return": float(sum(net_returns)),
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino,
+            "max_drawdown": max_dd,
+            "calmar_ratio": calmar,
+        }
+
+    def _calculate_risk_metrics(
+        self, returns_pct: list[float]
+    ) -> tuple[float, float, float, float]:
+        """
+        Calculate Sharpe, Sortino, max drawdown, and Calmar ratio.
+
+        Args:
+            returns_pct: Per-trade returns as percentages (e.g. 2.0 = 2%)
+
+        Returns:
+            (sharpe_ratio, sortino_ratio, max_drawdown_pct, calmar_ratio)
+        """
+        if len(returns_pct) < 2:
+            return 0.0, 0.0, 0.0, 0.0
+
+        arr = np.array(returns_pct)
+        mean_r = float(np.mean(arr))
+        std_r = float(np.std(arr, ddof=1))
+
+        ann_factor = np.sqrt(252)
+        sharpe = float((mean_r / std_r) * ann_factor) if std_r > 1e-8 else 0.0
+
+        downside = arr[arr < 0]
+        downside_std = float(np.std(downside, ddof=1)) if len(downside) > 1 else 1e-8
+        sortino = float((mean_r / downside_std) * ann_factor) if downside_std > 1e-8 else 0.0
+
+        # Max drawdown from cumulative returns
+        cum = np.cumsum(arr)
+        running_max = np.maximum.accumulate(cum)
+        max_dd = float(np.min(cum - running_max))  # negative percentage
+
+        total_return = float(np.sum(arr))
+        calmar = total_return / abs(max_dd) if abs(max_dd) > 1e-8 else 0.0
+
+        return sharpe, sortino, max_dd, calmar
 
     def determine_actual_signal(self, price_change: float) -> Signal:
         """

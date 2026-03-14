@@ -1,10 +1,9 @@
 """TensorFlow model for trading signal classification and price prediction."""
 
-import tensorflow as tf
-from tensorflow import keras
-import numpy as np
-from typing import Optional
 import os
+
+import numpy as np
+from tensorflow import keras
 
 from models.losses import sparse_focal_loss
 
@@ -22,7 +21,7 @@ class SignalModel:
         self,
         input_dim: int,
         sequence_length: int = 20,
-        hidden_units: list[int] = [128, 64, 32],
+        hidden_units: list[int] | None = None,
         dropout_rate: float = 0.1,
         use_focal_loss: bool = True,
         focal_gamma: float = 2.0,
@@ -42,12 +41,12 @@ class SignalModel:
         """
         self.input_dim = input_dim
         self.sequence_length = sequence_length
-        self.hidden_units = hidden_units
+        self.hidden_units = hidden_units if hidden_units is not None else [128, 64, 32]
         self.dropout_rate = dropout_rate
         self.use_focal_loss = use_focal_loss
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
-        self.model: Optional[keras.Model] = None
+        self.model: keras.Model | None = None
         self._build_model()
 
     def _build_model(self):
@@ -127,6 +126,7 @@ class SignalModel:
         """Load model weights from disk."""
         if self.model is None:
             self._build_model()
+        assert self.model is not None
         self.model.load_weights(path)
 
     def summary(self):

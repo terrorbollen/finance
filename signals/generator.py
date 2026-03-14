@@ -1,15 +1,15 @@
 """Signal generation logic combining model predictions into actionable signals."""
 
 import json
+import os
+from dataclasses import dataclass
+from enum import Enum
+
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Optional
-from enum import Enum
-import os
 
-from data.fetcher import StockDataFetcher
 from data.features import FeatureEngineer
+from data.fetcher import StockDataFetcher
 from models.signal_model import SignalModel
 from signals.calibration import ConfidenceCalibrator
 
@@ -35,7 +35,7 @@ class Signal:
     stop_loss: float
     predicted_change: float  # Percentage
     timestamp: str
-    raw_confidence: Optional[float] = None  # 0-100% (raw model output)
+    raw_confidence: float | None = None  # 0-100% (raw model output)
     is_calibrated: bool = False
 
     def __str__(self) -> str:
@@ -69,7 +69,9 @@ class SignalGenerator:
         model_path: str = "checkpoints/signal_model.weights.h5",
         sequence_length: int = 20,
         stop_loss_pct: float = 0.05,
-        calibration_path: Optional[str] = None,
+        calibration_path: str | None = None,
+        min_confidence: float | None = None,
+        atr_multiplier: float = 2.0,
     ):
         """
         Initialize the signal generator.
@@ -77,23 +79,28 @@ class SignalGenerator:
         Args:
             model_path: Path to trained model weights
             sequence_length: Sequence length used during training
-            stop_loss_pct: Default stop loss percentage
+            stop_loss_pct: Fallback stop loss percentage if ATR unavailable
             calibration_path: Path to calibration JSON (default: checkpoints/calibration.json)
+            min_confidence: Minimum calibrated confidence (0-100) to trade.
+                            Signals below this threshold are forced to HOLD.
+            atr_multiplier: Stop loss distance as a multiple of ATR (default: 2.0)
         """
         self.model_path = model_path
         self.sequence_length = sequence_length
         self.stop_loss_pct = stop_loss_pct
-        self.model: Optional[SignalModel] = None
+        self.min_confidence = min_confidence
+        self.atr_multiplier = atr_multiplier
+        self.model: SignalModel | None = None
         self.fetcher = StockDataFetcher(period="1y")
 
         # Normalization params (should match training)
-        self.feature_mean: Optional[np.ndarray] = None
-        self.feature_std: Optional[np.ndarray] = None
-        self.feature_columns: Optional[list[str]] = None
-        self.input_dim: Optional[int] = None
+        self.feature_mean: np.ndarray | None = None
+        self.feature_std: np.ndarray | None = None
+        self.feature_columns: list[str] | None = None
+        self.input_dim: int | None = None
 
         # Confidence calibration
-        self.calibrator: Optional[ConfidenceCalibrator] = None
+        self.calibrator: ConfidenceCalibrator | None = None
         self.calibration_path = calibration_path or "checkpoints/calibration.json"
 
         # Load training config if available
@@ -104,7 +111,7 @@ class SignalGenerator:
         """Load training configuration from file."""
         config_path = self.model_path.replace(".weights.h5", "_config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
             self.feature_columns = config.get("feature_columns")
             self.feature_mean = np.array(config.get("feature_mean"))
@@ -167,6 +174,8 @@ class SignalGenerator:
         if self.model is None:
             input_dim = self.input_dim if self.input_dim else len(feature_cols)
             self._load_model(input_dim=input_dim)
+        if self.model is None:
+            raise RuntimeError("Failed to initialize model")
 
         # Normalize features using training statistics if available
         if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
@@ -207,6 +216,10 @@ class SignalGenerator:
             raw_confidence_pct = None
             is_calibrated = False
 
+        # Confidence threshold filtering: force HOLD if below minimum
+        if self.min_confidence is not None and confidence < self.min_confidence:
+            direction = Direction.HOLD
+
         # Current price
         current_price = float(df_features["close"].iloc[-1])
 
@@ -214,13 +227,17 @@ class SignalGenerator:
         entry_price = current_price
         target_price = current_price * (1 + predicted_change / 100)
 
-        # Stop loss based on direction
-        if direction == Direction.BUY:
-            stop_loss = current_price * (1 - self.stop_loss_pct)
-        elif direction == Direction.SELL:
-            stop_loss = current_price * (1 + self.stop_loss_pct)
+        # ATR-based dynamic stop loss (atr column is already % of price)
+        if "atr" in df_features.columns:
+            atr_pct = float(df_features["atr"].iloc[-1])
+            stop_distance = (atr_pct / 100) * self.atr_multiplier
         else:
-            stop_loss = current_price * (1 - self.stop_loss_pct)
+            stop_distance = self.stop_loss_pct
+
+        if direction == Direction.SELL:
+            stop_loss = current_price * (1 + stop_distance)
+        else:
+            stop_loss = current_price * (1 - stop_distance)
 
         # Create signal
         return Signal(

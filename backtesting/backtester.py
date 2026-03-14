@@ -1,22 +1,22 @@
 """Core backtesting engine."""
 
-import numpy as np
-import pandas as pd
-from datetime import date, timedelta
-from typing import Optional
 import json
 import os
+from datetime import date
 
-from data.fetcher import StockDataFetcher
-from data.features import FeatureEngineer
-from models.signal_model import SignalModel
-from backtesting.results import (
-    Signal,
-    HorizonPrediction,
-    DailyPrediction,
-    BacktestResult,
-)
+import numpy as np
+import pandas as pd
+
 from backtesting.metrics import MetricsCalculator
+from backtesting.results import (
+    BacktestResult,
+    DailyPrediction,
+    HorizonPrediction,
+    Signal,
+)
+from data.features import FeatureEngineer
+from data.fetcher import StockDataFetcher
+from models.signal_model import SignalModel
 
 
 class Backtester:
@@ -33,6 +33,7 @@ class Backtester:
         sequence_length: int = 20,
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
+        commission_pct: float = 0.001,
     ):
         """
         Initialize the backtester.
@@ -42,21 +43,23 @@ class Backtester:
             sequence_length: Sequence length used during training
             buy_threshold: Price change threshold for BUY signal
             sell_threshold: Price change threshold for SELL signal
+            commission_pct: One-way commission as decimal (default 0.1%)
         """
         self.model_path = model_path
         self.sequence_length = sequence_length
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
 
-        self.model: Optional[SignalModel] = None
-        self.feature_columns: Optional[list[str]] = None
-        self.feature_mean: Optional[np.ndarray] = None
-        self.feature_std: Optional[np.ndarray] = None
-        self.input_dim: Optional[int] = None
+        self.model: SignalModel | None = None
+        self.feature_columns: list[str] | None = None
+        self.feature_mean: np.ndarray | None = None
+        self.feature_std: np.ndarray | None = None
+        self.input_dim: int | None = None
 
         self.metrics_calculator = MetricsCalculator(
             buy_threshold=buy_threshold,
             sell_threshold=sell_threshold,
+            commission_pct=commission_pct,
         )
 
         self._load_config()
@@ -65,7 +68,7 @@ class Backtester:
         """Load training configuration from file."""
         config_path = self.model_path.replace(".weights.h5", "_config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
             self.feature_columns = config.get("feature_columns")
             self.feature_mean = np.array(config.get("feature_mean"))
@@ -87,9 +90,9 @@ class Backtester:
     def run(
         self,
         ticker: str,
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-        horizons: list[int] = [1, 2, 3, 4, 5, 6, 7],
+        start_date: date | None = None,
+        end_date: date | None = None,
+        horizons: list[int] | None = None,
     ) -> BacktestResult:
         """
         Run backtest on historical data.
@@ -128,28 +131,32 @@ class Backtester:
         if self.model is None:
             input_dim = self.input_dim if self.input_dim else len(feature_cols)
             self._load_model(input_dim)
+        if self.model is None:
+            raise RuntimeError("Failed to initialize model")
 
         # Filter to backtest period (but keep earlier data for features)
-        df_dates = df.index.date
+        df_dates = pd.DatetimeIndex(df.index).date
         backtest_mask = (df_dates >= start_date) & (df_dates <= end_date)
-        backtest_indices = np.where(backtest_mask)[0]
+        all_indices = np.where(backtest_mask)[0]
 
-        if len(backtest_indices) == 0:
+        if len(all_indices) == 0:
             raise ValueError(f"No data in backtest period {start_date} to {end_date}")
 
         # Need enough history for sequence
         min_start_idx = self.sequence_length
-        backtest_indices = [i for i in backtest_indices if i >= min_start_idx]
+        backtest_indices = [int(i) for i in all_indices if i >= min_start_idx]
 
         print(f"Running backtest on {ticker} from {start_date} to {end_date}")
         print(f"Processing {len(backtest_indices)} trading days...")
 
+        if horizons is None:
+            horizons = [1, 2, 3, 4, 5, 6, 7]
+
         # Process each day
         daily_predictions = []
-        max_horizon = max(horizons)
 
         for idx in backtest_indices:
-            pred_date = df.index[idx].date()
+            pred_date = pd.DatetimeIndex(df.index)[idx].date()
             current_price = float(df["close"].iloc[idx])
 
             # Make predictions for all horizons
@@ -235,6 +242,7 @@ class Backtester:
         X = features_norm.reshape(1, self.sequence_length, -1)
 
         # Get prediction
+        assert self.model is not None
         signal_probs, signal_class, price_target = self.model.predict(X)
 
         direction_idx = signal_class[0]

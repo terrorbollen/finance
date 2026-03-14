@@ -1,10 +1,9 @@
 """Dataclasses for storing backtest predictions and results."""
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
 from enum import Enum
-import json
 
 
 class Signal(Enum):
@@ -24,12 +23,12 @@ class HorizonPrediction:
     predicted_price_change: float  # percentage
 
     # Actual outcomes (filled in after horizon passes)
-    actual_signal: Optional[Signal] = None
-    actual_price_change: Optional[float] = None
-    target_date: Optional[date] = None
+    actual_signal: Signal | None = None
+    actual_price_change: float | None = None
+    target_date: date | None = None
 
     @property
-    def is_correct(self) -> Optional[bool]:
+    def is_correct(self) -> bool | None:
         """Check if the predicted signal matches the actual outcome."""
         if self.actual_signal is None:
             return None
@@ -101,7 +100,12 @@ class HorizonMetrics:
 
     # Simulated trading metrics
     win_rate: float = 0.0
-    total_return: float = 0.0
+    total_return: float = 0.0       # gross return (%)
+    net_total_return: float = 0.0   # after transaction costs (%)
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    max_drawdown: float = 0.0       # negative percentage
+    calmar_ratio: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +118,11 @@ class HorizonMetrics:
             "price_rmse": self.price_rmse,
             "win_rate": self.win_rate,
             "total_return": self.total_return,
+            "net_total_return": self.net_total_return,
+            "sharpe_ratio": self.sharpe_ratio,
+            "sortino_ratio": self.sortino_ratio,
+            "max_drawdown": self.max_drawdown,
+            "calmar_ratio": self.calmar_ratio,
         }
 
 
@@ -172,20 +181,26 @@ class BacktestResult:
 
         lines.extend([
             "",
-            "SIMULATED TRADING",
+            "SIMULATED TRADING PERFORMANCE (per horizon)",
             "-" * 80,
+            f"{'Horizon':<10} {'Win Rate':<10} {'Gross Ret':<12} {'Net Ret':<12} {'Sharpe':<8} {'Sortino':<8} {'Max DD':<10} {'Calmar':<8}",
         ])
 
-        # Average trading metrics across horizons
-        if self.horizon_metrics:
-            avg_win_rate = sum(m.win_rate for m in self.horizon_metrics.values()) / len(self.horizon_metrics)
-            avg_return = sum(m.total_return for m in self.horizon_metrics.values()) / len(self.horizon_metrics)
+        for horizon in sorted(self.horizon_metrics.keys()):
+            m = self.horizon_metrics[horizon]
+            dd_str = f"{m.max_drawdown:+.1f}%" if m.max_drawdown != 0.0 else "N/A"
+            calmar_str = f"{m.calmar_ratio:.2f}" if m.calmar_ratio != 0.0 else "N/A"
+            lines.append(
+                f"{horizon}-day{'':<5} {m.win_rate*100:.1f}%{'':<5} "
+                f"{m.total_return:+.2f}%{'':<5} {m.net_total_return:+.2f}%{'':<5} "
+                f"{m.sharpe_ratio:.2f}{'':<4} {m.sortino_ratio:.2f}{'':<4} "
+                f"{dd_str:<10} {calmar_str}"
+            )
 
-            lines.extend([
-                f"Win Rate:         {avg_win_rate*100:.1f}%",
-                f"Total Return:     {avg_return:+.2f}%",
-                f"vs Buy & Hold:    {self.buy_hold_return:+.2f}%",
-            ])
+        lines.extend([
+            "",
+            f"Buy & Hold Return: {self.buy_hold_return:+.2f}%",
+        ])
 
         lines.append("=" * 80)
 
@@ -221,7 +236,7 @@ class BacktestResult:
             ])
 
             for daily in self.daily_predictions:
-                for horizon, pred in daily.predictions.items():
+                for _horizon, pred in daily.predictions.items():
                     writer.writerow([
                         pred.prediction_date.isoformat(),
                         pred.horizon_days,

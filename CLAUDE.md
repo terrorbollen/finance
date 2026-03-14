@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Multi-Agent Coordination
+
+When running as one of several parallel agents, follow this protocol before doing any work:
+
+1. **Read `AGENTS.md`** — it is the task board and module ownership map.
+2. **Claim a task** — edit the **Claimed by** cell for your chosen task to your agent name (e.g. `Agent-1`). Pick the highest-priority unclaimed task in a module no other agent currently owns.
+3. **Stay in scope** — only edit files listed in your task's **Scope** column. Do not touch `main.py` or other modules unless your task explicitly lists them.
+4. **Mark done** — update the task **Status** to `done` when finished.
+5. **Release the module** — clear the **Current owner** entry in the Module Ownership Map when done.
+
+> If two agents accidentally pick the same module, the one that claimed it later should back off and choose a different task.
+
 ## Project Overview
 
 A CLI-based trading signal generator for Swedish stocks and indexes (e.g., OMX Stockholm 30). Uses TensorFlow for ML-based predictions and yfinance for market data.

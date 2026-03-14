@@ -56,7 +56,7 @@ def sparse_focal_loss(gamma: float = 2.0, alpha: float = 0.25):
     return focal_loss_fn
 
 
-def balanced_focal_loss(gamma: float = 2.0, class_weights: list = None):
+def balanced_focal_loss(gamma: float = 2.0, class_weights: list | None = None):
     """
     Focal Loss with per-class weights for severe imbalance.
 
@@ -68,10 +68,8 @@ def balanced_focal_loss(gamma: float = 2.0, class_weights: list = None):
     Returns:
         Loss function compatible with Keras model.compile()
     """
-    if class_weights is None:
-        class_weights = [1.0, 1.0, 1.0]
-
-    class_weights = tf.constant(class_weights, dtype=tf.float32)
+    weights_list = class_weights if class_weights is not None else [1.0, 1.0, 1.0]
+    weights_tensor = tf.constant(weights_list, dtype=tf.float32)
 
     def balanced_focal_loss_fn(y_true, y_pred):
         # Clip predictions
@@ -85,7 +83,7 @@ def balanced_focal_loss(gamma: float = 2.0, class_weights: list = None):
         y_true_one_hot = tf.one_hot(y_true, depth=num_classes)
 
         # Get class weight for each sample
-        sample_weights = tf.reduce_sum(y_true_one_hot * class_weights, axis=-1)
+        sample_weights = tf.reduce_sum(y_true_one_hot * weights_tensor, axis=-1)
 
         # Calculate cross entropy
         cross_entropy = -y_true_one_hot * tf.math.log(y_pred)

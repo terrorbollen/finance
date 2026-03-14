@@ -1,24 +1,24 @@
 """Training pipeline for the signal model."""
 
 import json
-import numpy as np
-import pandas as pd
-from tensorflow import keras
-from sklearn.utils.class_weight import compute_class_weight
-from typing import Optional
 import os
 
-from models.signal_model import SignalModel, create_sequences
-from data.fetcher import StockDataFetcher
+import numpy as np
+import pandas as pd
+from sklearn.utils.class_weight import compute_class_weight
+from tensorflow import keras
+
 from data.features import FeatureEngineer
+from data.fetcher import StockDataFetcher
 from models.mlflow_tracking import (
-    setup_mlflow,
-    training_run,
     log_hyperparameters,
     log_metrics,
     log_model_artifact,
     log_training_history,
+    setup_mlflow,
+    training_run,
 )
+from models.signal_model import SignalModel, create_sequences
 
 
 class ModelTrainer:
@@ -53,7 +53,7 @@ class ModelTrainer:
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.use_adaptive_thresholds = use_adaptive_thresholds
-        self.model: Optional[SignalModel] = None
+        self.model: SignalModel | None = None
         self.feature_columns: list[str] = []
 
     def prepare_data(
@@ -105,8 +105,8 @@ class ModelTrainer:
 
         # Extract arrays
         features = df_features[self.feature_columns].values
-        labels = df_features["label"].values.astype(int)
-        price_changes = (df_features["future_return"].values * 100)  # As percentage
+        labels = df_features["label"].to_numpy().astype(int)
+        price_changes = df_features["future_return"].to_numpy() * 100  # As percentage
 
         # Replace any inf values with large finite values, then clip
         features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
@@ -169,7 +169,7 @@ class ModelTrainer:
         print("CLASS DISTRIBUTION (before sequences):")
         print("=" * 50)
         label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
-        for label, count in zip(unique, counts):
+        for label, count in zip(unique, counts, strict=False):
             pct = count / total * 100
             print(f"  {label_names.get(label, label)}: {count:,} samples ({pct:.1f}%)")
         print("=" * 50 + "\n")
@@ -193,8 +193,8 @@ class ModelTrainer:
             classes=np.array([0, 1, 2]),
             y=y_signal
         )
-        class_weight_dict = {i: w for i, w in enumerate(class_weights)}
-        print(f"Class weights (to balance training):")
+        class_weight_dict = dict(enumerate(class_weights))
+        print("Class weights (to balance training):")
         for label, weight in class_weight_dict.items():
             print(f"  {label_names.get(label, label)}: {weight:.3f}")
         print()
@@ -273,17 +273,18 @@ class ModelTrainer:
                 # Only use sample weights with standard cross-entropy
                 fit_kwargs["sample_weight"] = [sw_train, np.ones_like(sw_train)]
 
+            assert self.model.model is not None
             history = self.model.model.fit(**fit_kwargs)
 
             # Evaluate on test set
-            test_results = self.model.model.evaluate(
+            test_results: dict[str, float] = self.model.model.evaluate(
                 X_test,
                 [y_signal_test, y_price_test],
                 verbose=0,
                 return_dict=True,
             )
 
-            print(f"\nTest Results:")
+            print("\nTest Results:")
             print(f"  Signal Accuracy: {test_results['signal_accuracy']:.4f}")
             print(f"  Price MAE: {test_results['price_target_mae']:.4f}%")
 

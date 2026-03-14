@@ -1,5 +1,5 @@
 """Signal generation module."""
 
-from signals.generator import SignalGenerator, Signal
+from signals.generator import Signal, SignalGenerator
 
 __all__ = ["SignalGenerator", "Signal"]

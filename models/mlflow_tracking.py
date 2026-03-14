@@ -2,7 +2,7 @@
 
 import os
 from contextlib import contextmanager
-from typing import Any, Optional
+from typing import Any
 
 import mlflow
 from mlflow.tracking import MlflowClient
@@ -10,7 +10,7 @@ from mlflow.tracking import MlflowClient
 
 def setup_mlflow(
     experiment_name: str = "trading-signals",
-    tracking_uri: Optional[str] = None,
+    tracking_uri: str | None = None,
 ) -> str:
     """
     Configure MLflow tracking.
@@ -42,7 +42,7 @@ def setup_mlflow(
 @contextmanager
 def training_run(
     run_name: str,
-    tags: Optional[dict[str, str]] = None,
+    tags: dict[str, str] | None = None,
     nested: bool = False,
 ):
     """
@@ -72,7 +72,7 @@ def log_hyperparameters(params: dict[str, Any]) -> None:
     mlflow.log_params(params)
 
 
-def log_metrics(metrics: dict[str, float], step: Optional[int] = None) -> None:
+def log_metrics(metrics: dict[str, float], step: int | None = None) -> None:
     """
     Log training metrics.
 
@@ -83,7 +83,7 @@ def log_metrics(metrics: dict[str, float], step: Optional[int] = None) -> None:
     mlflow.log_metrics(metrics, step=step)
 
 
-def log_model_artifact(path: str, artifact_path: Optional[str] = None) -> None:
+def log_model_artifact(path: str, artifact_path: str | None = None) -> None:
     """
     Log model weights or config as an artifact.
 
@@ -116,7 +116,7 @@ def get_best_run(
     experiment_name: str,
     metric: str = "test_signal_accuracy",
     ascending: bool = False,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Get the best run from an experiment based on a metric.
 

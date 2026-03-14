@@ -5,10 +5,10 @@ calibrated probabilities that reflect actual historical accuracy.
 """
 
 import json
-import numpy as np
 from dataclasses import dataclass
-from typing import Optional
 from pathlib import Path
+
+import numpy as np
 
 
 @dataclass
@@ -223,7 +223,7 @@ class ConfidenceCalibrator:
     @classmethod
     def load(cls, path: str) -> "ConfidenceCalibrator":
         """Load calibration parameters from JSON file."""
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
 
         calibrator = cls(num_buckets=data["num_buckets"])

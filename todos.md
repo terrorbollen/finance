@@ -8,7 +8,7 @@ Track potential improvements for the trading signal generator.
 - [x] Integrate calibrator into `SignalGenerator`
 - [x] Add `calibrate` CLI command to train from backtest data
 - [x] Display both raw and calibrated confidence in signal output
-- [ ] **Confidence threshold filtering**: Only trade above X% calibrated confidence
+- [x] **Confidence threshold filtering**: Only trade above X% calibrated confidence (`--min-confidence` flag)
 - [ ] **Per-direction calibration**: Separate calibrators for BUY/SELL/HOLD
 
 ## Model Improvements
@@ -21,7 +21,7 @@ Track potential improvements for the trading signal generator.
 
 ## Risk Management
 
-- [ ] **Dynamic stop-loss based on ATR**: Use Average True Range (already calculated) to set volatility-adjusted stops (e.g., `stop = price - 2*ATR`)
+- [x] **Dynamic stop-loss based on ATR**: Stop = price ± 2×ATR (uses existing `atr` feature; `atr_multiplier` param)
 - [ ] **Position sizing based on confidence**: Higher confidence = larger position (Kelly criterion or fixed-fractional)
 - [ ] **Portfolio-level risk limits**: Maximum drawdown limits, sector exposure limits
 - [ ] **Dynamic take-profit targets**: Use ATR multiples instead of fixed percentage
@@ -45,10 +45,10 @@ Track potential improvements for the trading signal generator.
 
 ## Backtesting Enhancements
 
-- [ ] **Transaction costs**: Include realistic trading costs (~0.05-0.1% per trade for Swedish stocks)
+- [x] **Transaction costs**: Include realistic trading costs (`--commission` flag, default 0.1% one-way)
 - [ ] **Slippage modeling**: Volume-based slippage estimation
 - [ ] **Position sizing**: Implement Kelly criterion or other position sizing methods
-- [ ] **Risk-adjusted metrics**: Add Sharpe ratio, Sortino ratio, max drawdown, Calmar ratio
+- [x] **Risk-adjusted metrics**: Sharpe, Sortino, max drawdown, Calmar ratio in backtest summary
 - [ ] **Benchmark comparison**: Compare against multiple benchmarks (index, sector ETF)
 - [ ] **Monte Carlo simulation**: Estimate confidence intervals for backtest results
 

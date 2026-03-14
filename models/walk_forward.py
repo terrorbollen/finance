@@ -1,23 +1,23 @@
 """Walk-forward training for adaptive model retraining."""
 
+import json
+from dataclasses import dataclass, field
+from typing import cast
+
 import numpy as np
 import pandas as pd
 from tensorflow import keras
-from typing import Optional
-from dataclasses import dataclass, field
-import os
-import json
 
-from models.signal_model import SignalModel, create_sequences
-from data.fetcher import StockDataFetcher
 from data.features import FeatureEngineer
+from data.fetcher import StockDataFetcher
 from models.mlflow_tracking import (
-    setup_mlflow,
-    training_run,
     log_hyperparameters,
     log_metrics,
     log_model_artifact,
+    setup_mlflow,
+    training_run,
 )
+from models.signal_model import SignalModel, create_sequences
 
 
 @dataclass
@@ -112,8 +112,8 @@ class WalkForwardTrainer:
         self.sell_threshold = sell_threshold
 
         self.feature_columns: list[str] = []
-        self.feature_mean: Optional[np.ndarray] = None
-        self.feature_std: Optional[np.ndarray] = None
+        self.feature_mean: np.ndarray | None = None
+        self.feature_std: np.ndarray | None = None
 
     def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare features and labels from raw price data."""
@@ -137,8 +137,8 @@ class WalkForwardTrainer:
         df_features = df_features.dropna()
 
         features = df_features[self.feature_columns].values
-        labels = df_features["label"].values.astype(int)
-        price_changes = df_features["future_return"].values * 100
+        labels = df_features["label"].to_numpy().astype(int)
+        price_changes = df_features["future_return"].to_numpy() * 100
 
         # Handle inf/nan
         features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
@@ -227,6 +227,7 @@ class WalkForwardTrainer:
             ),
         ]
 
+        assert model.model is not None
         # Train
         model.model.fit(
             X_train,
@@ -239,9 +240,9 @@ class WalkForwardTrainer:
         )
 
         # Evaluate
-        val_results = model.model.evaluate(
+        val_results = cast(dict[str, float], model.model.evaluate(
             X_val, [y_signal_val, y_price_val], verbose=0, return_dict=True
-        )
+        ))
 
         return model, val_results
 
@@ -308,7 +309,7 @@ class WalkForwardTrainer:
         if verbose:
             print(f"\nTotal sequences: {len(X)}")
             unique, counts = np.unique(y_signal, return_counts=True)
-            print(f"Class distribution: {dict(zip(unique, counts))}")
+            print(f"Class distribution: {dict(zip(unique, counts, strict=False))}")
 
         # Generate windows
         windows = self.generate_windows(len(X))
@@ -360,7 +361,7 @@ class WalkForwardTrainer:
                 # Get class distribution in validation set
                 val_labels = y_signal[val_start:val_end]
                 unique, counts = np.unique(val_labels, return_counts=True)
-                class_dist = {int(k): int(v) for k, v in zip(unique, counts)}
+                class_dist = {int(k): int(v) for k, v in zip(unique, counts, strict=False)}
 
                 window_result = WindowResult(
                     window_id=i + 1,
@@ -416,6 +417,8 @@ class WalkForwardTrainer:
                     best_model.save(model_path)
 
                     config_path = model_path.replace(".weights.h5", "_config.json")
+                    if self.feature_mean is None or self.feature_std is None:
+                        raise RuntimeError("feature_mean/std not set; call prepare_data first")
                     config = {
                         "feature_columns": self.feature_columns,
                         "feature_mean": self.feature_mean.tolist(),
@@ -450,6 +453,8 @@ class WalkForwardTrainer:
             if best_model is not None:
                 best_model.save(model_path)
 
+                if self.feature_mean is None or self.feature_std is None:
+                    raise RuntimeError("feature_mean/std not set; call prepare_data first")
                 config_path = model_path.replace(".weights.h5", "_config.json")
                 config = {
                     "feature_columns": self.feature_columns,

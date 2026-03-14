@@ -1,7 +1,7 @@
 """Feature engineering module for technical indicators."""
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
 class FeatureEngineer:
@@ -32,9 +32,11 @@ class FeatureEngineer:
         return self.df
 
     def add_moving_averages(
-        self, periods: list[int] = [5, 10, 20, 50, 200]
+        self, periods: list[int] | None = None
     ) -> pd.DataFrame:
         """Add Moving Average features as price ratios (normalized)."""
+        if periods is None:
+            periods = [5, 10, 20, 50, 200]
         for period in periods:
             sma = self.df["close"].rolling(window=period).mean()
             ema = self.df["close"].ewm(span=period, adjust=False).mean()
@@ -115,7 +117,7 @@ class FeatureEngineer:
 
         # Volume trend (is volume increasing or decreasing?)
         # Use log difference instead of pct_change to avoid inf
-        vol_log = np.log1p(volume_sma_20)
+        vol_log = pd.Series(np.log1p(volume_sma_20), index=self.df.index)
         self.df["volume_trend"] = (vol_log - vol_log.shift(5)).clip(-2, 2)
 
         # On-Balance Volume (OBV) - use normalized rate of change instead of cumulative
@@ -130,7 +132,7 @@ class FeatureEngineer:
 
         obv_series = pd.Series(obv, index=self.df.index)
         # Normalize OBV: use log difference instead of pct_change
-        obv_log = np.log1p(np.abs(obv_series)) * np.sign(obv_series)
+        obv_log = pd.Series(np.log1p(np.abs(obv_series)) * np.sign(obv_series), index=self.df.index)
         self.df["obv_roc"] = (obv_log - obv_log.shift(10)).clip(-5, 5)
 
         return self.df
@@ -146,8 +148,8 @@ class FeatureEngineer:
 
         # Average True Range (ATR) - normalize by price for scale independence
         high_low = self.df["high"] - self.df["low"]
-        high_close = np.abs(self.df["high"] - self.df["close"].shift())
-        low_close = np.abs(self.df["low"] - self.df["close"].shift())
+        high_close = (self.df["high"] - self.df["close"].shift()).abs()
+        low_close = (self.df["low"] - self.df["close"].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         atr = true_range.rolling(window=14).mean()
         self.df["atr"] = atr / self.df["close"] * 100  # As percentage of price
