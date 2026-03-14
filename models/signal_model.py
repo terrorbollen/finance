@@ -21,6 +21,7 @@ class SignalModel:
         input_dim: int,
         sequence_length: int = 20,
         hidden_units: list[int] = [128, 64, 32],
+        dropout_rate: float = 0.1,
     ):
         """
         Initialize the model architecture.
@@ -33,6 +34,7 @@ class SignalModel:
         self.input_dim = input_dim
         self.sequence_length = sequence_length
         self.hidden_units = hidden_units
+        self.dropout_rate = dropout_rate
         self.model: Optional[keras.Model] = None
         self._build_model()
 
@@ -43,14 +45,14 @@ class SignalModel:
 
         # LSTM layers for sequence processing
         x = keras.layers.LSTM(self.hidden_units[0], return_sequences=True)(inputs)
-        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.Dropout(self.dropout_rate)(x)
         x = keras.layers.LSTM(self.hidden_units[1], return_sequences=False)(x)
-        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.Dropout(self.dropout_rate)(x)
 
         # Dense layers
         x = keras.layers.Dense(self.hidden_units[2], activation="relu")(x)
         x = keras.layers.BatchNormalization()(x)
-        x = keras.layers.Dropout(0.2)(x)
+        x = keras.layers.Dropout(self.dropout_rate)(x)
 
         # Signal classification head (Buy=0, Hold=1, Sell=2)
         signal_output = keras.layers.Dense(3, activation="softmax", name="signal")(x)
@@ -64,13 +66,14 @@ class SignalModel:
         )
 
         # Compile with appropriate losses
+        # Focus more on signal classification (weight 1.0) vs price (weight 0.1)
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=0.001),
             loss={
                 "signal": "sparse_categorical_crossentropy",
                 "price_target": "mse",
             },
-            loss_weights={"signal": 1.0, "price_target": 0.5},
+            loss_weights={"signal": 1.0, "price_target": 0.1},
             metrics={"signal": "accuracy", "price_target": "mae"},
         )
 

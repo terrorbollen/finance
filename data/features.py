@@ -34,12 +34,14 @@ class FeatureEngineer:
     def add_moving_averages(
         self, periods: list[int] = [5, 10, 20, 50, 200]
     ) -> pd.DataFrame:
-        """Add Simple Moving Averages (SMA) and Exponential Moving Averages (EMA)."""
+        """Add Moving Average features as price ratios (normalized)."""
         for period in periods:
-            self.df[f"sma_{period}"] = self.df["close"].rolling(window=period).mean()
-            self.df[f"ema_{period}"] = (
-                self.df["close"].ewm(span=period, adjust=False).mean()
-            )
+            sma = self.df["close"].rolling(window=period).mean()
+            ema = self.df["close"].ewm(span=period, adjust=False).mean()
+
+            # Store as ratio to current price (normalized, scale-independent)
+            self.df[f"sma_{period}_ratio"] = (self.df["close"] - sma) / sma
+            self.df[f"ema_{period}_ratio"] = (self.df["close"] - ema) / ema
 
         return self.df
 
@@ -65,17 +67,19 @@ class FeatureEngineer:
         self, fast: int = 12, slow: int = 26, signal: int = 9
     ) -> pd.DataFrame:
         """
-        Add Moving Average Convergence Divergence (MACD).
+        Add Moving Average Convergence Divergence (MACD) - normalized.
 
         Components:
-        - MACD line: Fast EMA - Slow EMA
+        - MACD line: Fast EMA - Slow EMA (normalized by price)
         - Signal line: EMA of MACD line
         - Histogram: MACD - Signal (positive = bullish, negative = bearish)
         """
         ema_fast = self.df["close"].ewm(span=fast, adjust=False).mean()
         ema_slow = self.df["close"].ewm(span=slow, adjust=False).mean()
 
-        self.df["macd"] = ema_fast - ema_slow
+        # Normalize MACD by price to make it scale-independent
+        macd = ema_fast - ema_slow
+        self.df["macd"] = macd / self.df["close"] * 100  # As percentage
         self.df["macd_signal"] = self.df["macd"].ewm(span=signal, adjust=False).mean()
         self.df["macd_histogram"] = self.df["macd"] - self.df["macd_signal"]
 
@@ -83,7 +87,7 @@ class FeatureEngineer:
 
     def add_bollinger_bands(self, period: int = 20, std_dev: float = 2.0) -> pd.DataFrame:
         """
-        Add Bollinger Bands.
+        Add Bollinger Bands (normalized features only).
 
         Bands expand during volatility and contract during consolidation.
         Price near upper band may indicate overbought, lower band oversold.
@@ -91,25 +95,30 @@ class FeatureEngineer:
         sma = self.df["close"].rolling(window=period).mean()
         std = self.df["close"].rolling(window=period).std()
 
-        self.df["bb_middle"] = sma
-        self.df["bb_upper"] = sma + (std * std_dev)
-        self.df["bb_lower"] = sma - (std * std_dev)
-        self.df["bb_width"] = (self.df["bb_upper"] - self.df["bb_lower"]) / sma
-        self.df["bb_position"] = (self.df["close"] - self.df["bb_lower"]) / (
-            self.df["bb_upper"] - self.df["bb_lower"]
-        )
+        bb_upper = sma + (std * std_dev)
+        bb_lower = sma - (std * std_dev)
+
+        # Only store normalized/ratio features (not raw price levels)
+        self.df["bb_width"] = (bb_upper - bb_lower) / sma
+        self.df["bb_position"] = (self.df["close"] - bb_lower) / (bb_upper - bb_lower)
 
         return self.df
 
     def add_volume_features(self) -> pd.DataFrame:
-        """Add volume-based features."""
-        # Volume moving average
-        self.df["volume_sma_20"] = self.df["volume"].rolling(window=20).mean()
+        """Add volume-based features (normalized to avoid huge values)."""
+        # Volume moving average (for internal calculation only)
+        volume_sma_20 = self.df["volume"].rolling(window=20).mean()
 
-        # Volume ratio (current vs average)
-        self.df["volume_ratio"] = self.df["volume"] / self.df["volume_sma_20"]
+        # Volume ratio (current vs average) - already normalized
+        # Clip to avoid extreme values
+        self.df["volume_ratio"] = (self.df["volume"] / volume_sma_20).clip(-10, 10)
 
-        # On-Balance Volume (OBV)
+        # Volume trend (is volume increasing or decreasing?)
+        # Use log difference instead of pct_change to avoid inf
+        vol_log = np.log1p(volume_sma_20)
+        self.df["volume_trend"] = (vol_log - vol_log.shift(5)).clip(-2, 2)
+
+        # On-Balance Volume (OBV) - use normalized rate of change instead of cumulative
         obv = [0]
         for i in range(1, len(self.df)):
             if self.df["close"].iloc[i] > self.df["close"].iloc[i - 1]:
@@ -119,25 +128,29 @@ class FeatureEngineer:
             else:
                 obv.append(obv[-1])
 
-        self.df["obv"] = obv
+        obv_series = pd.Series(obv, index=self.df.index)
+        # Normalize OBV: use log difference instead of pct_change
+        obv_log = np.log1p(np.abs(obv_series)) * np.sign(obv_series)
+        self.df["obv_roc"] = (obv_log - obv_log.shift(10)).clip(-5, 5)
 
         return self.df
 
     def add_momentum_features(self) -> pd.DataFrame:
         """Add momentum-based features."""
-        # Price Rate of Change (ROC)
+        # Price Rate of Change (ROC) - already normalized as percentage
         for period in [5, 10, 20]:
             self.df[f"roc_{period}"] = (
                 (self.df["close"] - self.df["close"].shift(period))
                 / self.df["close"].shift(period)
             ) * 100
 
-        # Average True Range (ATR) - volatility measure
+        # Average True Range (ATR) - normalize by price for scale independence
         high_low = self.df["high"] - self.df["low"]
         high_close = np.abs(self.df["high"] - self.df["close"].shift())
         low_close = np.abs(self.df["low"] - self.df["close"].shift())
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        self.df["atr"] = true_range.rolling(window=14).mean()
+        atr = true_range.rolling(window=14).mean()
+        self.df["atr"] = atr / self.df["close"] * 100  # As percentage of price
 
         return self.df
 

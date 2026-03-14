@@ -54,8 +54,20 @@ def cmd_train(args):
     if args.tickers:
         tickers = args.tickers
     else:
-        # Default training tickers
-        tickers = ["^OMX", "VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST"]
+        # Default training tickers - expanded for more diverse training data
+        tickers = [
+            "^OMX",           # OMX Stockholm 30 Index
+            "VOLV-B.ST",      # Volvo
+            "ERIC-B.ST",      # Ericsson
+            "HM-B.ST",        # H&M
+            "SEB-A.ST",       # SEB Bank
+            "ATCO-A.ST",      # Atlas Copco
+            "INVE-B.ST",      # Investor
+            "NDA-SE.ST",      # Nordea
+            "SWED-A.ST",      # Swedbank
+            "SAND.ST",        # Sandvik
+            "ABB.ST",         # ABB
+        ]
 
     print(f"\nTraining model on {len(tickers)} tickers...")
     print(f"Epochs: {args.epochs}")

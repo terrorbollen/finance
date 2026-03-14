@@ -4,6 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 from tensorflow import keras
+from sklearn.utils.class_weight import compute_class_weight
 from typing import Optional
 import os
 
@@ -21,8 +22,9 @@ class ModelTrainer:
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
         prediction_horizon: int = 5,
-        buy_threshold: float = 0.02,
-        sell_threshold: float = -0.02,
+        buy_threshold: float = 0.015,  # Lowered from 0.02 to get more BUY signals
+        sell_threshold: float = -0.015,  # Raised from -0.02 to get more SELL signals
+        use_adaptive_thresholds: bool = True,  # Adapt thresholds to volatility
     ):
         """
         Initialize the trainer.
@@ -32,8 +34,9 @@ class ModelTrainer:
             train_ratio: Proportion of data for training
             val_ratio: Proportion of data for validation (rest is test)
             prediction_horizon: Days ahead to predict for price target
-            buy_threshold: Min % gain to label as Buy
-            sell_threshold: Max % loss to label as Sell
+            buy_threshold: Min % gain to label as Buy (default lowered for balance)
+            sell_threshold: Max % loss to label as Sell (default raised for balance)
+            use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
         """
         self.sequence_length = sequence_length
         self.train_ratio = train_ratio
@@ -41,6 +44,7 @@ class ModelTrainer:
         self.prediction_horizon = prediction_horizon
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        self.use_adaptive_thresholds = use_adaptive_thresholds
         self.model: Optional[SignalModel] = None
         self.feature_columns: list[str] = []
 
@@ -70,12 +74,23 @@ class ModelTrainer:
             - 1
         )
 
+        # Determine thresholds
+        if self.use_adaptive_thresholds:
+            # Adaptive thresholds based on stock's volatility
+            # Use rolling std of returns as volatility measure
+            volatility = df_features["close"].pct_change().rolling(20).std().median()
+            # Scale thresholds by volatility (typical volatility ~0.01-0.02)
+            scale = max(volatility / 0.015, 0.5)  # Don't go below 0.5x
+            buy_thresh = self.buy_threshold * scale
+            sell_thresh = self.sell_threshold * scale
+        else:
+            buy_thresh = self.buy_threshold
+            sell_thresh = self.sell_threshold
+
         # Create labels: 0=Buy, 1=Hold, 2=Sell
         df_features["label"] = 1  # Default: Hold
-        df_features.loc[df_features["future_return"] > self.buy_threshold, "label"] = 0
-        df_features.loc[
-            df_features["future_return"] < self.sell_threshold, "label"
-        ] = 2
+        df_features.loc[df_features["future_return"] > buy_thresh, "label"] = 0
+        df_features.loc[df_features["future_return"] < sell_thresh, "label"] = 2
 
         # Drop rows with NaN
         df_features = df_features.dropna()
@@ -84,6 +99,9 @@ class ModelTrainer:
         features = df_features[self.feature_columns].values
         labels = df_features["label"].values.astype(int)
         price_changes = (df_features["future_return"].values * 100)  # As percentage
+
+        # Replace any inf values with large finite values, then clip
+        features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
 
         return features, labels, price_changes
 
@@ -129,25 +147,56 @@ class ModelTrainer:
         labels = np.concatenate(all_labels)
         prices = np.concatenate(all_prices)
 
+        # Print class distribution BEFORE training
+        unique, counts = np.unique(labels, return_counts=True)
+        total = len(labels)
+        print("\n" + "=" * 50)
+        print("CLASS DISTRIBUTION (before sequences):")
+        print("=" * 50)
+        label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
+        for label, count in zip(unique, counts):
+            pct = count / total * 100
+            print(f"  {label_names.get(label, label)}: {count:,} samples ({pct:.1f}%)")
+        print("=" * 50 + "\n")
+
         # Normalize features
-        self.feature_mean = features.mean(axis=0)
-        self.feature_std = features.std(axis=0) + 1e-8
+        self.feature_mean = np.nanmean(features, axis=0)
+        self.feature_std = np.nanstd(features, axis=0) + 1e-8
         features = (features - self.feature_mean) / self.feature_std
+
+        # Replace any remaining inf/nan with 0
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Create sequences
         X, y_signal, y_price = create_sequences(
             features, labels, prices, self.sequence_length
         )
 
+        # Compute class weights to handle imbalance
+        class_weights = compute_class_weight(
+            class_weight="balanced",
+            classes=np.array([0, 1, 2]),
+            y=y_signal
+        )
+        class_weight_dict = {i: w for i, w in enumerate(class_weights)}
+        print(f"Class weights (to balance training):")
+        for label, weight in class_weight_dict.items():
+            print(f"  {label_names.get(label, label)}: {weight:.3f}")
+        print()
+
+        # Convert class weights to sample weights (for multi-output model compatibility)
+        sample_weights = np.array([class_weight_dict[label] for label in y_signal])
+
         # Time-series split (no shuffling to preserve temporal order)
         n = len(X)
         train_end = int(n * self.train_ratio)
         val_end = int(n * (self.train_ratio + self.val_ratio))
 
-        X_train, y_signal_train, y_price_train = (
+        X_train, y_signal_train, y_price_train, sw_train = (
             X[:train_end],
             y_signal[:train_end],
             y_price[:train_end],
+            sample_weights[:train_end],
         )
         X_val, y_signal_val, y_price_val = (
             X[train_end:val_end],
@@ -184,13 +233,15 @@ class ModelTrainer:
             ),
         ]
 
-        # Train
+        # Train with sample weights to handle class imbalance
+        # For multi-output models, sample_weight should be a list [weights_for_output1, weights_for_output2]
         history = self.model.model.fit(
             X_train,
-            {"signal": y_signal_train, "price_target": y_price_train},
+            [y_signal_train, y_price_train],  # Use list format for outputs
+            sample_weight=[sw_train, np.ones_like(sw_train)],  # Weights for signal, uniform for price
             validation_data=(
                 X_val,
-                {"signal": y_signal_val, "price_target": y_price_val},
+                [y_signal_val, y_price_val],
             ),
             epochs=epochs,
             batch_size=batch_size,
@@ -201,7 +252,7 @@ class ModelTrainer:
         # Evaluate on test set
         test_results = self.model.model.evaluate(
             X_test,
-            {"signal": y_signal_test, "price_target": y_price_test},
+            [y_signal_test, y_price_test],
             verbose=0,
             return_dict=True,
         )
