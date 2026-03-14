@@ -29,6 +29,9 @@ class HorizonPrediction:
     actual_price_change: float | None = None
     target_date: date | None = None
 
+    # Volume data for slippage modeling (today / rolling_20d_avg; None if unavailable)
+    relative_volume: float | None = None
+
     @property
     def is_correct(self) -> bool | None:
         """Check if the predicted signal matches the actual outcome."""
@@ -47,6 +50,7 @@ class HorizonPrediction:
             "actual_price_change": self.actual_price_change,
             "target_date": self.target_date.isoformat() if self.target_date else None,
             "is_correct": self.is_correct,
+            "relative_volume": self.relative_volume,
         }
 
 

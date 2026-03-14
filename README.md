@@ -198,6 +198,16 @@ finance/
 
 ---
 
+## Contributing / Adding Tasks
+
+Work on this project is coordinated through `AGENTS.md`, which acts as both a task board and an improvement log.
+
+**If you're working on a task and notice something worth fixing or adding** — a bug, a missing guard, a potential improvement — add it as a new row in the relevant section of `AGENTS.md` with status `open` before moving on. Don't fix it inline; keep your scope focused and let the board track it.
+
+**If you want to pick up a task**, read `AGENTS.md` first, claim the top unclaimed item in a module no one else owns, and follow the protocol there. Run `uv run ruff check .` and `uv run mypy .` before marking anything done.
+
+---
+
 ## Key Design Decisions
 
 - **Focal loss** is on by default to handle the class imbalance (most days are HOLD)

@@ -14,6 +14,14 @@ When running as one of several parallel agents, follow this protocol before doin
 
 > If two agents accidentally pick the same module, the one that claimed it later should back off and choose a different task.
 
+## Philosophy
+
+We are building a finance tool that generates **reliable, actionable trading signals** for Swedish stocks. The goal is not to build an impressive ML system — it is to make good decisions in the market consistently over time.
+
+Reliability comes before everything else. A signal that is wrong 40% of the time but tells you honestly when it is confident is more valuable than a complex model that looks good on paper but fails in live trading. Every improvement should make the system more trustworthy, not just more sophisticated.
+
+When in doubt, do less. A simpler model that is well-validated beats a clever one that has never been honestly tested.
+
 ## Project Overview
 
 A CLI-based trading signal generator for Swedish stocks and indexes (e.g., OMX Stockholm 30). Uses TensorFlow for ML-based predictions and yfinance for market data.

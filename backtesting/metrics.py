@@ -1,5 +1,7 @@
 """Metrics calculation for backtesting results."""
 
+import math
+
 import numpy as np
 
 from backtesting.results import (
@@ -8,6 +10,9 @@ from backtesting.results import (
     HorizonPrediction,
     Signal,
 )
+
+# Maximum per-trade slippage cost as a percentage (0.5%)
+_MAX_SLIPPAGE_PCT = 0.5
 
 
 class MetricsCalculator:
@@ -18,6 +23,7 @@ class MetricsCalculator:
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
         commission_pct: float = 0.001,
+        slippage_factor: float = 0.0,
     ):
         """
         Initialize metrics calculator.
@@ -26,10 +32,14 @@ class MetricsCalculator:
             buy_threshold: Price change threshold for BUY signal (default 2%)
             sell_threshold: Price change threshold for SELL signal (default -2%)
             commission_pct: One-way commission as decimal (default 0.1% = 0.001)
+            slippage_factor: Scaling constant for volume-based slippage.
+                             slippage_pct = slippage_factor / sqrt(relative_volume),
+                             capped at 0.5%. Set to 0 to disable.
         """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.commission_pct = commission_pct
+        self.slippage_factor = slippage_factor
 
     def calculate_horizon_metrics(
         self,
@@ -209,7 +219,18 @@ class MetricsCalculator:
                 continue  # HOLD: no trade
 
             gross_returns.append(gross)
-            net_returns.append(gross - round_trip_cost)
+
+            # Volume-based slippage (round-trip: applied at both entry and exit)
+            slippage_cost = 0.0
+            if self.slippage_factor > 0 and p.relative_volume is not None:
+                rel_vol = max(p.relative_volume, 1e-6)  # guard against division by zero
+                one_way_slippage = min(
+                    self.slippage_factor / math.sqrt(rel_vol),
+                    _MAX_SLIPPAGE_PCT,
+                )
+                slippage_cost = 2 * one_way_slippage  # round-trip
+
+            net_returns.append(gross - round_trip_cost - slippage_cost)
 
         empty: dict[str, float] = {
             "win_rate": 0.0,

@@ -92,6 +92,8 @@ class WalkForwardTrainer:
         prediction_horizon: int = 5,
         buy_threshold: float = 0.015,
         sell_threshold: float = -0.015,
+        purge_gap: int | None = None,
+        embargo_gap: int | None = None,
     ):
         """
         Initialize walk-forward trainer.
@@ -104,6 +106,13 @@ class WalkForwardTrainer:
             prediction_horizon: Days ahead to predict
             buy_threshold: Price change threshold for BUY label
             sell_threshold: Price change threshold for SELL label
+            purge_gap: Bars to skip between end of training and start of validation to
+                prevent label leakage from overlapping sequences.  Defaults to
+                ``prediction_horizon`` (typically 5).
+            embargo_gap: Bars to skip at the very start of each new training window
+                where sequences would overlap with the previous validation period
+                (combinatorial purged CV embargo concept).  Defaults to
+                ``sequence_length`` (typically 20).
         """
         self.initial_train_days = initial_train_days
         self.validation_days = validation_days
@@ -112,6 +121,9 @@ class WalkForwardTrainer:
         self.prediction_horizon = prediction_horizon
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        # Default purge_gap to prediction_horizon; embargo_gap to sequence_length
+        self.purge_gap: int = prediction_horizon if purge_gap is None else purge_gap
+        self.embargo_gap: int = sequence_length if embargo_gap is None else embargo_gap
 
         self.feature_columns: list[str] = []
         self.feature_mean: np.ndarray | None = None
@@ -147,28 +159,56 @@ class WalkForwardTrainer:
 
     def generate_windows(self, n_samples: int) -> list[tuple[int, int, int, int]]:
         """
-        Generate train/validation window indices.
+        Generate train/validation window indices with purge and embargo gaps.
+
+        The purge gap skips ``purge_gap`` bars between the end of the training
+        window and the start of the validation window.  This prevents leakage
+        caused by LSTM sequences that overlap the train/val boundary sharing
+        the same future-return labels.
+
+        The embargo gap advances the training-window start by ``embargo_gap``
+        bars on every fold beyond the first.  This prevents the new training
+        window from reusing rows that were part of the previous validation set
+        and whose sequences could overlap with it (combinatorial purged CV).
 
         Args:
             n_samples: Total number of samples
 
         Returns:
-            List of (train_start, train_end, val_start, val_end) tuples
+            List of (train_start, train_end, val_start, val_end) tuples where
+            val_start already incorporates the purge gap and train_start
+            incorporates the embargo gap for folds > 0.
         """
         windows = []
 
-        # Account for sequence length at the start
         train_start = 0
         train_end = self.initial_train_days
 
-        while train_end + self.validation_days <= n_samples:
-            val_start = train_end
+        while True:
+            # Apply purge gap: skip rows between training end and val start
+            val_start = train_end + self.purge_gap
             val_end = val_start + self.validation_days
+
+            if val_end > n_samples:
+                break
 
             windows.append((train_start, train_end, val_start, val_end))
 
-            # Step forward (expanding window - include previous validation data)
+            # Step forward: the training window expands to include the just-seen
+            # validation data (expanding-window walk-forward).
+            prev_val_start = val_start  # keep for embargo calculation
             train_end = val_end
+
+            # Embargo gap: advance train_start so that sequences at the boundary
+            # of the previous validation period (which share future-return labels
+            # with validation rows) are excluded from the next training fold.
+            # The embargo covers ``embargo_gap`` rows starting from prev_val_start.
+            # When embargo_gap == 0 the formula collapses to prev_val_start which
+            # is <= the existing train_start = 0, so train_start never advances —
+            # preserving the original expanding-window behaviour.
+            if self.embargo_gap > 0:
+                new_train_start = prev_val_start + self.embargo_gap
+                train_start = max(train_start, new_train_start)
 
         return windows
 
@@ -322,10 +362,16 @@ class WalkForwardTrainer:
 
             for i, (train_start, train_end, val_start, val_end) in enumerate(windows):
                 if verbose:
+                    gap_info = (
+                        f" [purge={self.purge_gap}, embargo={self.embargo_gap}]"
+                        if self.purge_gap or self.embargo_gap
+                        else ""
+                    )
                     print(
                         f"Window {i + 1}/{len(windows)}: "
                         f"train[{train_start}:{train_end}] "
                         f"val[{val_start}:{val_end}]"
+                        f"{gap_info}"
                     )
 
                 # Train on window (optionally wrapped in nested MLflow run)
@@ -424,6 +470,8 @@ class WalkForwardTrainer:
                         "prediction_horizon": self.prediction_horizon,
                         "buy_threshold": self.buy_threshold,
                         "sell_threshold": self.sell_threshold,
+                        "purge_gap": self.purge_gap,
+                        "embargo_gap": self.embargo_gap,
                         "epochs": epochs,
                         "batch_size": batch_size,
                         "num_tickers": len(tickers),

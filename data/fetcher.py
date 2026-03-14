@@ -126,6 +126,43 @@ class StockDataFetcher:
         except (ValueError, IndexError):
             return None
 
+    def fetch_reference_series(
+        self, ticker: str, align_to: pd.DatetimeIndex
+    ) -> pd.DataFrame:
+        """
+        Fetch a reference price series (e.g. OMXS30, FX rates) and align it
+        to the supplied DatetimeIndex.
+
+        The result always has a ``close`` column.  Any dates in ``align_to``
+        that have no data in the downloaded series are forward-filled first,
+        then any remaining gaps (e.g. at the very start) are back-filled, and
+        finally filled with 0 to guarantee no NaNs remain.
+
+        Args:
+            ticker: Yahoo Finance ticker symbol, e.g. ``"^OMX"``,
+                    ``"USDSEK=X"``, or a common alias like ``"OMXS30"``.
+            align_to: DatetimeIndex of the primary stock DataFrame that the
+                      returned series should be aligned to.
+
+        Returns:
+            DataFrame with a ``close`` column indexed by ``align_to``.
+        """
+        resolved = self._resolve_ticker(ticker)
+        stock = yf.Ticker(resolved)
+        df = stock.history(period=self.period, interval=self.interval)
+
+        if df.empty:
+            # Return zeros for the whole requested index
+            return pd.DataFrame({"close": 0.0}, index=align_to)
+
+        df = self._preprocess(df)
+
+        # Reindex to the primary stock's dates, fill gaps, ensure no NaNs
+        aligned = df[["close"]].reindex(align_to)
+        aligned = aligned.ffill().bfill().fillna(0)
+
+        return aligned
+
     @staticmethod
     def list_swedish_tickers() -> dict[str, str]:
         """Return a dictionary of available Swedish ticker aliases."""

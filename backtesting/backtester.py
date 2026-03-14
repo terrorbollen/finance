@@ -34,6 +34,8 @@ class Backtester:
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
         commission_pct: float = 0.001,
+        strict_holdout: bool = True,
+        slippage_factor: float = 0.1,
     ):
         """
         Initialize the backtester.
@@ -44,22 +46,32 @@ class Backtester:
             buy_threshold: Price change threshold for BUY signal
             sell_threshold: Price change threshold for SELL signal
             commission_pct: One-way commission as decimal (default 0.1%)
+            strict_holdout: If True, enforce that backtest start is on or after the
+                            holdout start date saved in the model config. Prevents
+                            evaluating the model on data it was trained or validated on.
+            slippage_factor: Scaling constant for volume-based slippage model.
+                             slippage_pct = slippage_factor / sqrt(relative_volume),
+                             capped at 0.5% per trade. Set to 0 to disable slippage.
         """
         self.model_path = model_path
         self.sequence_length = sequence_length
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        self.strict_holdout = strict_holdout
+        self.slippage_factor = slippage_factor
 
         self.model: SignalModel | None = None
         self.feature_columns: list[str] | None = None
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
         self.input_dim: int | None = None
+        self.holdout_start_date: date | None = None
 
         self.metrics_calculator = MetricsCalculator(
             buy_threshold=buy_threshold,
             sell_threshold=sell_threshold,
             commission_pct=commission_pct,
+            slippage_factor=slippage_factor,
         )
 
         self._load_config()
@@ -75,6 +87,8 @@ class Backtester:
             self.feature_std = np.array(config.get("feature_std"))
             self.sequence_length = config.get("sequence_length", self.sequence_length)
             self.input_dim = config.get("input_dim")
+            if "holdout_start_date" in config:
+                self.holdout_start_date = date.fromisoformat(config["holdout_start_date"])
 
     def _load_model(self, input_dim: int):
         """Load the trained model."""
@@ -124,6 +138,22 @@ class Backtester:
             start_date = (pd.Timestamp.now() - pd.DateOffset(years=1)).date()
         if end_date is None:
             end_date = pd.Timestamp.now().date()
+
+        # Enforce strict holdout: backtest must not overlap with training/validation data.
+        if self.strict_holdout and self.holdout_start_date is not None:
+            if start_date < self.holdout_start_date:
+                print(
+                    f"WARNING: Requested start {start_date} overlaps with training data "
+                    f"(holdout begins {self.holdout_start_date}). "
+                    f"Adjusting start to {self.holdout_start_date} to avoid look-ahead bias."
+                )
+                start_date = self.holdout_start_date
+        elif self.holdout_start_date is None and self.strict_holdout:
+            print(
+                "NOTE: Model config does not contain a holdout date "
+                "(model was trained before this feature was added). "
+                "Cannot enforce strict holdout. Re-train the model to enable this check."
+            )
 
         # Initialize model
         if self.model is None:
@@ -246,12 +276,25 @@ class Backtester:
         confidence = float(signal_probs[0][direction_idx])
         predicted_change = float(price_target[0])
 
+        # Compute relative volume for slippage modeling
+        relative_volume: float | None = None
+        if "volume" in df.columns:
+            try:
+                vol_series = df["volume"].iloc[: idx + 1]
+                rolling_avg = vol_series.rolling(window=20, min_periods=1).mean().iloc[-1]
+                today_vol = float(vol_series.iloc[-1])
+                if rolling_avg > 0:
+                    relative_volume = today_vol / float(rolling_avg)
+            except Exception:
+                relative_volume = None
+
         return HorizonPrediction(
             prediction_date=pred_date,
             horizon_days=horizon,
             predicted_signal=predicted_signal,
             confidence=confidence,
             predicted_price_change=predicted_change,
+            relative_volume=relative_volume,
         )
 
     def _fill_actual_outcomes(

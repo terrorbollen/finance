@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -171,9 +172,14 @@ class ModelTrainer:
             print(f"  {label_names.get(label, label)}: {count:,} samples ({pct:.1f}%)")
         print("=" * 50 + "\n")
 
-        # Normalize features
-        self.feature_mean = np.nanmean(features, axis=0)
-        self.feature_std = np.nanstd(features, axis=0) + 1e-8
+        # Normalize features using training data only to avoid look-ahead bias.
+        # Compute the raw-feature index where training ends so we don't include
+        # val/test statistics in the mean/std.
+        n_sequences = len(features) - self.sequence_length + 1
+        train_end_raw = int(n_sequences * self.train_ratio) + self.sequence_length - 1
+        train_end_raw = min(train_end_raw, len(features))
+        self.feature_mean = np.nanmean(features[:train_end_raw], axis=0)
+        self.feature_std = np.nanstd(features[:train_end_raw], axis=0) + 1e-8
         features = (features - self.feature_mean) / self.feature_std
 
         # Replace any remaining inf/nan with 0
@@ -283,12 +289,22 @@ class ModelTrainer:
 
             # Save training config for inference
             config_path = model_path.replace(".weights.h5", "_config.json")
+
+            # Approximate holdout start: data fetched over data_period_years ending today;
+            # holdout covers the last (1 - train_ratio - val_ratio) fraction of that period.
+            data_period_years = 5
+            holdout_fraction = 1.0 - self.train_ratio - self.val_ratio
+            holdout_days = int(holdout_fraction * data_period_years * 365)
+            holdout_start = date.today() - pd.Timedelta(days=holdout_days)
+
             config = {
                 "feature_columns": self.feature_columns,
                 "feature_mean": self.feature_mean.tolist(),
                 "feature_std": self.feature_std.tolist(),
                 "sequence_length": self.sequence_length,
                 "input_dim": input_dim,
+                "training_fetch_date": date.today().isoformat(),
+                "holdout_start_date": holdout_start.date().isoformat(),
             }
             with open(config_path, "w") as f:
                 json.dump(config, f)

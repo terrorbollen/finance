@@ -151,7 +151,10 @@ def cmd_backtest(args):
     # Parse horizons
     horizons = args.horizons if args.horizons else [1, 2, 3, 4, 5, 6, 7]
 
-    backtester = Backtester(commission_pct=args.commission)
+    backtester = Backtester(
+        commission_pct=args.commission,
+        strict_holdout=not args.no_strict_holdout,
+    )
     try:
         result = backtester.run(
             ticker=args.ticker,
@@ -435,6 +438,13 @@ Examples:
         "--no-mlflow",
         action="store_true",
         help="Disable MLflow logging of backtest results",
+    )
+    backtest_parser.add_argument(
+        "--no-strict-holdout",
+        action="store_true",
+        dest="no_strict_holdout",
+        help="Allow backtest to overlap with training data (not recommended — disables the "
+             "look-ahead bias guard)",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
 
