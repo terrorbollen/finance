@@ -31,9 +31,7 @@ class FeatureEngineer:
 
         return self.df
 
-    def add_moving_averages(
-        self, periods: list[int] | None = None
-    ) -> pd.DataFrame:
+    def add_moving_averages(self, periods: list[int] | None = None) -> pd.DataFrame:
         """Add Moving Average features as price ratios (normalized)."""
         if periods is None:
             periods = [5, 10, 20, 50, 200]
@@ -65,9 +63,7 @@ class FeatureEngineer:
 
         return self.df
 
-    def add_macd(
-        self, fast: int = 12, slow: int = 26, signal: int = 9
-    ) -> pd.DataFrame:
+    def add_macd(self, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
         """
         Add Moving Average Convergence Divergence (MACD) - normalized.
 
@@ -142,8 +138,7 @@ class FeatureEngineer:
         # Price Rate of Change (ROC) - already normalized as percentage
         for period in [5, 10, 20]:
             self.df[f"roc_{period}"] = (
-                (self.df["close"] - self.df["close"].shift(period))
-                / self.df["close"].shift(period)
+                (self.df["close"] - self.df["close"].shift(period)) / self.df["close"].shift(period)
             ) * 100
 
         # Average True Range (ATR) - normalize by price for scale independence
@@ -171,9 +166,9 @@ class FeatureEngineer:
         self.df["dist_from_high"] = (
             self.df["high"].rolling(20).max() - self.df["close"]
         ) / self.df["close"]
-        self.df["dist_from_low"] = (
-            self.df["close"] - self.df["low"].rolling(20).min()
-        ) / self.df["close"]
+        self.df["dist_from_low"] = (self.df["close"] - self.df["low"].rolling(20).min()) / self.df[
+            "close"
+        ]
 
         return self.df
 

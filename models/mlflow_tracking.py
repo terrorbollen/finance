@@ -15,18 +15,20 @@ def setup_mlflow(
     """
     Configure MLflow tracking.
 
+    URI resolution order:
+      1. explicit ``tracking_uri`` argument
+      2. ``MLFLOW_TRACKING_URI`` environment variable (set by docker-compose)
+      3. local file store at ``./mlruns``
+
     Args:
         experiment_name: Name of the MLflow experiment
-        tracking_uri: MLflow tracking server URI (default: local ./mlruns)
+        tracking_uri: MLflow tracking server URI
 
     Returns:
         Experiment ID
     """
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    else:
-        # Default to local file store
-        mlflow.set_tracking_uri("file:./mlruns")
+    uri = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI") or "file:./mlruns"
+    mlflow.set_tracking_uri(uri)
 
     # Create or get experiment
     experiment = mlflow.get_experiment_by_name(experiment_name)
@@ -110,6 +112,56 @@ def log_training_history(history: dict[str, list[float]]) -> None:
                 epoch_metrics[metric_name] = values[epoch]
         if epoch_metrics:
             log_metrics(epoch_metrics, step=epoch)
+
+
+def get_recent_runs(
+    experiment_name: str = "trading-signals",
+    run_type: str | None = None,
+    ticker: str | None = None,
+    max_results: int = 20,
+) -> list[dict]:
+    """
+    Fetch recent runs from an experiment, optionally filtered by type and ticker.
+
+    Args:
+        experiment_name: MLflow experiment to query
+        run_type: Filter by ``run_type`` tag (e.g. ``"backtest"``, ``"standard"``)
+        ticker: Filter by ``ticker`` tag (exact match)
+        max_results: Maximum number of runs to return (most recent first)
+
+    Returns:
+        List of run dicts with keys: run_id, run_name, start_time, metrics, params, tags
+    """
+    client = MlflowClient()
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        return []
+
+    filter_parts = []
+    if run_type:
+        filter_parts.append(f"tags.run_type = '{run_type}'")
+    if ticker:
+        filter_parts.append(f"tags.ticker = '{ticker}'")
+    filter_string = " and ".join(filter_parts)
+
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string=filter_string,
+        order_by=["start_time DESC"],
+        max_results=max_results,
+    )
+
+    return [
+        {
+            "run_id": r.info.run_id,
+            "run_name": r.info.run_name,
+            "start_time": r.info.start_time,
+            "metrics": r.data.metrics,
+            "params": r.data.params,
+            "tags": r.data.tags,
+        }
+        for r in runs
+    ]
 
 
 def get_best_run(

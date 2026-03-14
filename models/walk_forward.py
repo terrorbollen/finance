@@ -23,6 +23,7 @@ from models.signal_model import SignalModel, create_sequences
 @dataclass
 class WindowResult:
     """Results from training on a single walk-forward window."""
+
     window_id: int
     train_start_idx: int
     train_end_idx: int
@@ -38,6 +39,7 @@ class WindowResult:
 @dataclass
 class WalkForwardResult:
     """Aggregated results from walk-forward training."""
+
     windows: list[WindowResult] = field(default_factory=list)
     mean_val_accuracy: float = 0.0
     std_val_accuracy: float = 0.0
@@ -124,9 +126,7 @@ class WalkForwardTrainer:
 
         # Calculate future returns
         df_features["future_return"] = (
-            df_features["close"].shift(-self.prediction_horizon)
-            / df_features["close"]
-            - 1
+            df_features["close"].shift(-self.prediction_horizon) / df_features["close"] - 1
         )
 
         # Create labels
@@ -145,9 +145,7 @@ class WalkForwardTrainer:
 
         return features, labels, price_changes
 
-    def generate_windows(
-        self, n_samples: int
-    ) -> list[tuple[int, int, int, int]]:
+    def generate_windows(self, n_samples: int) -> list[tuple[int, int, int, int]]:
         """
         Generate train/validation window indices.
 
@@ -240,9 +238,10 @@ class WalkForwardTrainer:
         )
 
         # Evaluate
-        val_results = cast(dict[str, float], model.model.evaluate(
-            X_val, [y_signal_val, y_price_val], verbose=0, return_dict=True
-        ))
+        val_results = cast(
+            dict[str, float],
+            model.model.evaluate(X_val, [y_signal_val, y_price_val], verbose=0, return_dict=True),
+        )
 
         return model, val_results
 
@@ -254,6 +253,7 @@ class WalkForwardTrainer:
         model_path: str = "checkpoints/signal_model.weights.h5",
         verbose: bool = True,
         track_with_mlflow: bool = True,
+        tags: dict[str, str] | None = None,
     ) -> WalkForwardResult:
         """
         Run walk-forward training on given tickers.
@@ -271,7 +271,7 @@ class WalkForwardTrainer:
         """
         # Setup MLflow tracking if enabled
         if track_with_mlflow:
-            setup_mlflow(experiment_name="walk-forward-training")
+            setup_mlflow()
         # Fetch and combine data
         fetcher = StockDataFetcher(period="5y")
         all_features, all_labels, all_prices = [], [], []
@@ -302,9 +302,7 @@ class WalkForwardTrainer:
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Create sequences
-        X, y_signal, y_price = create_sequences(
-            features, labels, prices, self.sequence_length
-        )
+        X, y_signal, y_price = create_sequences(features, labels, prices, self.sequence_length)
 
         if verbose:
             print(f"\nTotal sequences: {len(X)}")
@@ -324,38 +322,56 @@ class WalkForwardTrainer:
 
             for i, (train_start, train_end, val_start, val_end) in enumerate(windows):
                 if verbose:
-                    print(f"Window {i+1}/{len(windows)}: "
-                          f"train[{train_start}:{train_end}] "
-                          f"val[{val_start}:{val_end}]")
+                    print(
+                        f"Window {i + 1}/{len(windows)}: "
+                        f"train[{train_start}:{train_end}] "
+                        f"val[{val_start}:{val_end}]"
+                    )
 
                 # Train on window (optionally wrapped in nested MLflow run)
                 if track_with_mlflow:
-                    with training_run(run_name=f"window-{i+1}", nested=True):
-                        log_hyperparameters({
-                            "window_id": i + 1,
-                            "train_start": train_start,
-                            "train_end": train_end,
-                            "val_start": val_start,
-                            "val_end": val_end,
-                            "train_samples": train_end - train_start,
-                            "val_samples": val_end - val_start,
-                        })
-
-                        model, val_metrics = self.train_window(
-                            X, y_signal, y_price,
-                            train_start, train_end, val_start, val_end,
-                            epochs=epochs, batch_size=batch_size,
+                    with training_run(run_name=f"window-{i + 1}", nested=True):
+                        log_hyperparameters(
+                            {
+                                "window_id": i + 1,
+                                "train_start": train_start,
+                                "train_end": train_end,
+                                "val_start": val_start,
+                                "val_end": val_end,
+                                "train_samples": train_end - train_start,
+                                "val_samples": val_end - val_start,
+                            }
                         )
 
-                        log_metrics({
-                            "val_accuracy": val_metrics["signal_accuracy"],
-                            "val_loss": val_metrics["loss"],
-                        })
+                        model, val_metrics = self.train_window(
+                            X,
+                            y_signal,
+                            y_price,
+                            train_start,
+                            train_end,
+                            val_start,
+                            val_end,
+                            epochs=epochs,
+                            batch_size=batch_size,
+                        )
+
+                        log_metrics(
+                            {
+                                "val_accuracy": val_metrics["signal_accuracy"],
+                                "val_loss": val_metrics["loss"],
+                            }
+                        )
                 else:
                     model, val_metrics = self.train_window(
-                        X, y_signal, y_price,
-                        train_start, train_end, val_start, val_end,
-                        epochs=epochs, batch_size=batch_size,
+                        X,
+                        y_signal,
+                        y_price,
+                        train_start,
+                        train_end,
+                        val_start,
+                        val_end,
+                        epochs=epochs,
+                        batch_size=batch_size,
                     )
 
                 # Get class distribution in validation set
@@ -391,24 +407,30 @@ class WalkForwardTrainer:
         if track_with_mlflow:
             run_name = f"walk-forward-{'-'.join(tickers[:3])}"
             if len(tickers) > 3:
-                run_name += f"-+{len(tickers)-3}"
+                run_name += f"-+{len(tickers) - 3}"
 
-            with training_run(run_name=run_name, tags={"tickers": ",".join(tickers)}):
+            run_tags = {"tickers": ",".join(tickers), "run_type": "walk-forward"}
+            if tags:
+                run_tags.update(tags)
+
+            with training_run(run_name=run_name, tags=run_tags):
                 # Log hyperparameters
-                log_hyperparameters({
-                    "initial_train_days": self.initial_train_days,
-                    "validation_days": self.validation_days,
-                    "step_days": self.step_days,
-                    "sequence_length": self.sequence_length,
-                    "prediction_horizon": self.prediction_horizon,
-                    "buy_threshold": self.buy_threshold,
-                    "sell_threshold": self.sell_threshold,
-                    "epochs": epochs,
-                    "batch_size": batch_size,
-                    "num_tickers": len(tickers),
-                    "num_windows": len(windows),
-                    "total_sequences": len(X),
-                })
+                log_hyperparameters(
+                    {
+                        "initial_train_days": self.initial_train_days,
+                        "validation_days": self.validation_days,
+                        "step_days": self.step_days,
+                        "sequence_length": self.sequence_length,
+                        "prediction_horizon": self.prediction_horizon,
+                        "buy_threshold": self.buy_threshold,
+                        "sell_threshold": self.sell_threshold,
+                        "epochs": epochs,
+                        "batch_size": batch_size,
+                        "num_tickers": len(tickers),
+                        "num_windows": len(windows),
+                        "total_sequences": len(X),
+                    }
+                )
 
                 results, best_model = _run_walk_forward()
 
@@ -440,12 +462,14 @@ class WalkForwardTrainer:
 
                 # Log aggregated metrics
                 accuracies = [r.val_accuracy for r in results]
-                log_metrics({
-                    "mean_val_accuracy": float(np.mean(accuracies)),
-                    "std_val_accuracy": float(np.std(accuracies)),
-                    "best_window_accuracy": float(np.max(accuracies)),
-                    "worst_window_accuracy": float(np.min(accuracies)),
-                })
+                log_metrics(
+                    {
+                        "mean_val_accuracy": float(np.mean(accuracies)),
+                        "std_val_accuracy": float(np.std(accuracies)),
+                        "best_window_accuracy": float(np.max(accuracies)),
+                        "worst_window_accuracy": float(np.min(accuracies)),
+                    }
+                )
         else:
             results, best_model = _run_walk_forward()
 

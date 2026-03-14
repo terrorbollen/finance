@@ -78,9 +78,7 @@ class Backtester:
 
     def _load_model(self, input_dim: int):
         """Load the trained model."""
-        self.model = SignalModel(
-            input_dim=input_dim, sequence_length=self.sequence_length
-        )
+        self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
         try:
             self.model.load(self.model_path)
         except Exception as e:
@@ -188,9 +186,7 @@ class Backtester:
         horizon_metrics = {}
         for horizon in horizons:
             predictions = [
-                dp.predictions[horizon]
-                for dp in daily_predictions
-                if horizon in dp.predictions
+                dp.predictions[horizon] for dp in daily_predictions if horizon in dp.predictions
             ]
             horizon_metrics[horizon] = self.metrics_calculator.calculate_horizon_metrics(
                 predictions, horizon

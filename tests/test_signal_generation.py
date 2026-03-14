@@ -2,7 +2,7 @@
 
 import pytest
 
-from signals.generator import Direction, Signal
+from signals.generator import Direction, Signal, SignalGenerator
 
 
 class TestDirection:
@@ -119,3 +119,105 @@ class TestSignal:
         assert signal.target_price < signal.entry_price
         assert signal.stop_loss > signal.entry_price
         assert signal.predicted_change < 0
+
+
+class TestKellyPositionSize:
+    """Tests for Kelly criterion position sizing."""
+
+    @pytest.fixture
+    def gen(self) -> SignalGenerator:
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.stop_loss_pct = 0.05
+        gen.max_position_size = 0.25
+        return gen
+
+    def test_hold_returns_zero(self, gen: SignalGenerator):
+        assert gen._kelly_position_size(70, 3.0, 2.0, Direction.HOLD) == 0.0
+
+    def test_negative_kelly_returns_zero(self, gen: SignalGenerator):
+        # 40% confidence with bad odds → negative Kelly
+        assert gen._kelly_position_size(40, 1.0, 3.0, Direction.BUY) == 0.0
+
+    def test_position_capped_at_max(self, gen: SignalGenerator):
+        # Very high confidence should still be capped
+        size = gen._kelly_position_size(95, 10.0, 1.0, Direction.BUY)
+        assert size <= gen.max_position_size
+
+    def test_higher_confidence_gives_larger_position(self, gen: SignalGenerator):
+        low = gen._kelly_position_size(55, 3.0, 2.0, Direction.BUY)
+        high = gen._kelly_position_size(80, 3.0, 2.0, Direction.BUY)
+        assert high > low
+
+    def test_sell_direction_same_as_buy(self, gen: SignalGenerator):
+        buy = gen._kelly_position_size(70, 3.0, 2.0, Direction.BUY)
+        sell = gen._kelly_position_size(70, 3.0, 2.0, Direction.SELL)
+        assert buy == sell
+
+    def test_returns_fraction_between_zero_and_max(self, gen: SignalGenerator):
+        size = gen._kelly_position_size(65, 3.0, 2.0, Direction.BUY)
+        assert 0.0 <= size <= gen.max_position_size
+
+
+class TestAtrTakeProfit:
+    """Tests for ATR-based take-profit target calculation."""
+
+    @pytest.fixture
+    def gen(self) -> SignalGenerator:
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.stop_loss_pct = 0.05
+        gen.atr_multiplier = 2.0
+        gen.take_profit_atr_multiplier = 3.0
+        gen.max_position_size = 0.25
+        return gen
+
+    def _run(self, gen, direction, atr_pct, predicted_change, current_price=100.0):
+        """Simulate the price-target block from generate()."""
+        stop_distance = (atr_pct / 100) * gen.atr_multiplier
+        take_profit_distance = (atr_pct / 100) * gen.take_profit_atr_multiplier
+
+        if direction == Direction.SELL:
+            stop_loss = current_price * (1 + stop_distance)
+            target_price = current_price * (1 - take_profit_distance)
+            predicted_change = -take_profit_distance * 100
+        elif direction == Direction.BUY:
+            stop_loss = current_price * (1 - stop_distance)
+            target_price = current_price * (1 + take_profit_distance)
+            predicted_change = take_profit_distance * 100
+        else:
+            stop_loss = current_price * (1 - stop_distance)
+            target_price = current_price * (1 + predicted_change / 100)
+
+        return target_price, stop_loss, predicted_change
+
+    def test_buy_target_above_entry(self, gen: SignalGenerator):
+        target, stop, _ = self._run(gen, Direction.BUY, atr_pct=1.0, predicted_change=2.0)
+        assert target > 100.0
+
+    def test_sell_target_below_entry(self, gen: SignalGenerator):
+        target, stop, _ = self._run(gen, Direction.SELL, atr_pct=1.0, predicted_change=-2.0)
+        assert target < 100.0
+
+    def test_buy_reward_risk_ratio(self, gen: SignalGenerator):
+        # With atr_multiplier=2, take_profit_atr_multiplier=3 → R:R = 3/2 = 1.5
+        atr_pct = 1.0
+        target, stop, _ = self._run(gen, Direction.BUY, atr_pct=atr_pct, predicted_change=0.0)
+        reward = target - 100.0
+        risk = 100.0 - stop
+        assert abs(reward / risk - 1.5) < 0.01
+
+    def test_sell_reward_risk_ratio(self, gen: SignalGenerator):
+        atr_pct = 1.0
+        target, stop, _ = self._run(gen, Direction.SELL, atr_pct=atr_pct, predicted_change=0.0)
+        reward = 100.0 - target
+        risk = stop - 100.0
+        assert abs(reward / risk - 1.5) < 0.01
+
+    def test_predicted_change_matches_target(self, gen: SignalGenerator):
+        target, _, change = self._run(gen, Direction.BUY, atr_pct=2.0, predicted_change=0.0)
+        expected_change = (target - 100.0) / 100.0 * 100
+        assert abs(change - expected_change) < 0.001
+
+    def test_larger_atr_gives_wider_target(self, gen: SignalGenerator):
+        target_small, _, _ = self._run(gen, Direction.BUY, atr_pct=1.0, predicted_change=0.0)
+        target_large, _, _ = self._run(gen, Direction.BUY, atr_pct=2.0, predicted_change=0.0)
+        assert target_large > target_small

@@ -1,6 +1,5 @@
 """Data fetching module for Swedish stocks and indexes via yfinance."""
 
-
 import pandas as pd
 import yfinance as yf
 

@@ -35,6 +35,7 @@ class Signal:
     stop_loss: float
     predicted_change: float  # Percentage
     timestamp: str
+    position_size: float = 1.0  # fraction of capital (0-1), Kelly-based
     raw_confidence: float | None = None  # 0-100% (raw model output)
     is_calibrated: bool = False
 
@@ -46,17 +47,18 @@ class Signal:
             confidence_str = f"{self.confidence:.1f}%"
 
         lines = [
-            f"{'='*50}",
+            f"{'=' * 50}",
             f"  SIGNAL: {self.ticker}",
-            f"{'='*50}",
+            f"{'=' * 50}",
             f"  Direction:        {self.direction.value}",
             f"  Confidence:       {confidence_str}",
+            f"  Position Size:    {self.position_size * 100:.1f}% of capital (Kelly)",
             f"  Current Price:    {self.current_price:.2f}",
             f"  Entry Price:      {self.entry_price:.2f}",
             f"  Target Price:     {self.target_price:.2f} ({self.predicted_change:+.2f}%)",
             f"  Stop Loss:        {self.stop_loss:.2f}",
             f"  Generated:        {self.timestamp}",
-            f"{'='*50}",
+            f"{'=' * 50}",
         ]
         return "\n".join(lines)
 
@@ -72,6 +74,8 @@ class SignalGenerator:
         calibration_path: str | None = None,
         min_confidence: float | None = None,
         atr_multiplier: float = 2.0,
+        take_profit_atr_multiplier: float = 3.0,
+        max_position_size: float = 0.25,
     ):
         """
         Initialize the signal generator.
@@ -84,12 +88,18 @@ class SignalGenerator:
             min_confidence: Minimum calibrated confidence (0-100) to trade.
                             Signals below this threshold are forced to HOLD.
             atr_multiplier: Stop loss distance as a multiple of ATR (default: 2.0)
+            take_profit_atr_multiplier: Take-profit distance as a multiple of ATR (default: 3.0).
+                                        Gives a 3:2 reward/risk ratio with the default stop.
+                                        Falls back to model's predicted change if ATR unavailable.
+            max_position_size: Hard cap on Kelly position size as fraction of capital (default: 0.25)
         """
         self.model_path = model_path
         self.sequence_length = sequence_length
         self.stop_loss_pct = stop_loss_pct
         self.min_confidence = min_confidence
         self.atr_multiplier = atr_multiplier
+        self.take_profit_atr_multiplier = take_profit_atr_multiplier
+        self.max_position_size = max_position_size
         self.model: SignalModel | None = None
         self.fetcher = StockDataFetcher(period="1y")
 
@@ -131,9 +141,7 @@ class SignalGenerator:
 
     def _load_model(self, input_dim: int):
         """Load the trained model."""
-        self.model = SignalModel(
-            input_dim=input_dim, sequence_length=self.sequence_length
-        )
+        self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
         try:
             self.model.load(self.model_path)
         except Exception as e:
@@ -192,9 +200,7 @@ class SignalGenerator:
                 f"Not enough data points. Need {self.sequence_length}, got {len(features_norm)}"
             )
 
-        X = features_norm[-self.sequence_length :].reshape(
-            1, self.sequence_length, -1
-        )
+        X = features_norm[-self.sequence_length :].reshape(1, self.sequence_length, -1)
 
         # Get predictions
         signal_probs, signal_class, price_target = self.model.predict(X)
@@ -225,19 +231,45 @@ class SignalGenerator:
 
         # Calculate price targets
         entry_price = current_price
-        target_price = current_price * (1 + predicted_change / 100)
 
-        # ATR-based dynamic stop loss (atr column is already % of price)
+        # ATR-based stop loss and take-profit (atr column is already % of price)
         if "atr" in df_features.columns:
             atr_pct = float(df_features["atr"].iloc[-1])
             stop_distance = (atr_pct / 100) * self.atr_multiplier
+            take_profit_distance = (atr_pct / 100) * self.take_profit_atr_multiplier
+            use_atr_target = True
         else:
             stop_distance = self.stop_loss_pct
+            take_profit_distance = abs(predicted_change / 100)
+            use_atr_target = False
 
         if direction == Direction.SELL:
             stop_loss = current_price * (1 + stop_distance)
-        else:
+            if use_atr_target:
+                target_price = current_price * (1 - take_profit_distance)
+                predicted_change = -take_profit_distance * 100
+            else:
+                target_price = current_price * (1 + predicted_change / 100)
+        elif direction == Direction.BUY:
             stop_loss = current_price * (1 - stop_distance)
+            if use_atr_target:
+                target_price = current_price * (1 + take_profit_distance)
+                predicted_change = take_profit_distance * 100
+            else:
+                target_price = current_price * (1 + predicted_change / 100)
+        else:  # HOLD
+            stop_loss = current_price * (1 - stop_distance)
+            target_price = current_price * (1 + predicted_change / 100)
+
+        # Kelly criterion position sizing
+        # f* = (p*b - q) / b, where p=win_prob, q=1-p, b=gain/loss ratio
+        # Use half-Kelly and cap at max_position_size for safety
+        position_size = self._kelly_position_size(
+            confidence_pct=confidence,
+            predicted_change_pct=abs(predicted_change),
+            stop_distance_pct=stop_distance * 100,
+            direction=direction,
+        )
 
         # Create signal
         return Signal(
@@ -250,9 +282,56 @@ class SignalGenerator:
             stop_loss=stop_loss,
             predicted_change=predicted_change,
             timestamp=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            position_size=position_size,
             raw_confidence=raw_confidence_pct,
             is_calibrated=is_calibrated,
         )
+
+    def _kelly_position_size(
+        self,
+        confidence_pct: float,
+        predicted_change_pct: float,
+        stop_distance_pct: float,
+        direction: Direction,
+    ) -> float:
+        """
+        Compute half-Kelly position size capped at max_position_size.
+
+        Kelly fraction: f* = (p*b - q) / b
+          p = win probability (confidence)
+          q = 1 - p
+          b = expected gain / expected loss (reward-to-risk ratio)
+
+        Uses half-Kelly (0.5 * f*) to reduce variance.
+
+        Args:
+            confidence_pct: Model confidence in 0-100 range
+            predicted_change_pct: Absolute predicted price move (%)
+            stop_distance_pct: Stop loss distance from entry (%)
+            direction: Signal direction (HOLD returns 0)
+
+        Returns:
+            Position size as fraction of capital in [0, max_position_size]
+        """
+        if direction == Direction.HOLD:
+            return 0.0
+
+        p = confidence_pct / 100.0
+        q = 1.0 - p
+
+        # Reward-to-risk ratio; guard against zero stop
+        if stop_distance_pct < 1e-6:
+            stop_distance_pct = self.stop_loss_pct * 100
+        b = max(predicted_change_pct, 1e-6) / stop_distance_pct
+
+        kelly_f = (p * b - q) / b
+
+        # Negative Kelly means edge is against us → no trade
+        if kelly_f <= 0:
+            return 0.0
+
+        # Half-Kelly, capped at max_position_size
+        return min(0.5 * kelly_f, self.max_position_size)
 
     def scan(self, tickers: list[str]) -> list[Signal]:
         """

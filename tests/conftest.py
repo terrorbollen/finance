@@ -28,13 +28,15 @@ def sample_ohlcv_data() -> pd.DataFrame:
     # Generate volume
     volume = np.random.randint(100000, 1000000, n_days).astype(float)
 
-    df = pd.DataFrame({
-        "open": open_,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": volume,
-    })
+    df = pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        }
+    )
 
     # Add datetime index
     df.index = pd.date_range(start="2023-01-01", periods=n_days, freq="D")

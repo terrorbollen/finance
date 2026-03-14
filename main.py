@@ -3,10 +3,17 @@
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 
 from backtesting import Backtester
 from data.fetcher import StockDataFetcher
+from models.mlflow_tracking import (
+    get_recent_runs,
+    log_hyperparameters,
+    log_metrics,
+    setup_mlflow,
+    training_run,
+)
 from models.training import ModelTrainer
 from models.walk_forward import WalkForwardTrainer
 from signals.calibration import ConfidenceCalibrator
@@ -54,17 +61,17 @@ def cmd_train(args):
     else:
         # Default training tickers - expanded for more diverse training data
         tickers = [
-            "^OMX",           # OMX Stockholm 30 Index
-            "VOLV-B.ST",      # Volvo
-            "ERIC-B.ST",      # Ericsson
-            "HM-B.ST",        # H&M
-            "SEB-A.ST",       # SEB Bank
-            "ATCO-A.ST",      # Atlas Copco
-            "INVE-B.ST",      # Investor
-            "NDA-SE.ST",      # Nordea
-            "SWED-A.ST",      # Swedbank
-            "SAND.ST",        # Sandvik
-            "ABB.ST",         # ABB
+            "^OMX",  # OMX Stockholm 30 Index
+            "VOLV-B.ST",  # Volvo
+            "ERIC-B.ST",  # Ericsson
+            "HM-B.ST",  # H&M
+            "SEB-A.ST",  # SEB Bank
+            "ATCO-A.ST",  # Atlas Copco
+            "INVE-B.ST",  # Investor
+            "NDA-SE.ST",  # Nordea
+            "SWED-A.ST",  # Swedbank
+            "SAND.ST",  # Sandvik
+            "ABB.ST",  # ABB
         ]
 
     print(f"\nTraining model on {len(tickers)} tickers...")
@@ -72,9 +79,19 @@ def cmd_train(args):
     print(f"Walk-forward: {args.walk_forward}")
     print("-" * 50)
 
+    track = not args.no_mlflow
+    cli_tags = {
+        "cli.epochs": str(args.epochs),
+        "cli.batch_size": str(args.batch_size),
+        "cli.walk_forward": str(args.walk_forward),
+        "cli.focal_loss": str(not args.no_focal_loss),
+        "cli.tickers": ",".join(tickers),
+    }
+
     try:
         if args.walk_forward:
-            # Walk-forward training
+            cli_tags["cli.initial_days"] = str(args.initial_days)
+            cli_tags["cli.window_size"] = str(args.window_size)
             trainer = WalkForwardTrainer(
                 initial_train_days=args.initial_days,
                 validation_days=args.window_size,
@@ -84,6 +101,8 @@ def cmd_train(args):
                 tickers=tickers,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
+                track_with_mlflow=track,
+                tags=cli_tags,
             )
             print("\n" + results.summary())
         else:
@@ -94,6 +113,8 @@ def cmd_train(args):
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 use_focal_loss=not args.no_focal_loss,
+                track_with_mlflow=track,
+                tags=cli_tags,
             )
             print("\nTraining complete!")
             print(f"Final test accuracy: {results['test_signal_accuracy']:.4f}")
@@ -142,6 +163,42 @@ def cmd_backtest(args):
         # Print summary
         print(result.summary())
 
+        # Log to MLflow unless opted out
+        if not args.no_mlflow:
+            setup_mlflow()
+            run_name = f"backtest-{args.ticker}"
+            tags = {
+                "run_type": "backtest",
+                "ticker": args.ticker,
+            }
+            with training_run(run_name=run_name, tags=tags):
+                log_hyperparameters(
+                    {
+                        "ticker": args.ticker,
+                        "start_date": str(result.start_date),
+                        "end_date": str(result.end_date),
+                        "horizons": str(horizons),
+                        "commission_pct": str(args.commission),
+                        "trading_days": result.trading_days,
+                        "buy_hold_return": result.buy_hold_return,
+                    }
+                )
+                # Log per-horizon metrics with horizon prefix
+                for h, m in result.horizon_metrics.items():
+                    log_metrics(
+                        {
+                            f"h{h}.accuracy": m.accuracy,
+                            f"h{h}.win_rate": m.win_rate,
+                            f"h{h}.net_return": m.net_total_return,
+                            f"h{h}.sharpe": m.sharpe_ratio,
+                            f"h{h}.sortino": m.sortino_ratio,
+                            f"h{h}.max_drawdown": m.max_drawdown,
+                            f"h{h}.calmar": m.calmar_ratio,
+                            f"h{h}.price_mae": m.price_mae,
+                        }
+                    )
+            print("\nResults logged to MLflow.")
+
         # Export if requested
         if args.output:
             if args.output.endswith(".csv"):
@@ -149,13 +206,62 @@ def cmd_backtest(args):
                 print(f"\nResults exported to {args.output}")
             else:
                 # Default to JSON
-                output_path = args.output if args.output.endswith(".json") else args.output + ".json"
+                output_path = (
+                    args.output if args.output.endswith(".json") else args.output + ".json"
+                )
                 result.export_json(output_path)
                 print(f"\nResults exported to {output_path}")
 
     except Exception as e:
         print(f"Backtest error: {e}")
         sys.exit(1)
+
+
+def cmd_history(args):
+    """Show trend of backtest and training results from MLflow."""
+
+    setup_mlflow()
+
+    run_type = args.type
+    ticker = args.ticker if hasattr(args, "ticker") else None
+    horizon = args.horizon
+    n = args.runs
+
+    runs = get_recent_runs(run_type=run_type, ticker=ticker, max_results=n)
+
+    if not runs:
+        print("No runs found. Run some backtests or training first.")
+        return
+
+    print(f"\nLast {len(runs)} '{run_type}' runs" + (f" for {ticker}" if ticker else "") + ":\n")
+
+    if run_type == "backtest":
+        hk = f"h{horizon}"
+        header = f"{'Date':<22} {'Ticker':<14} {'Acc':>6} {'WinRate':>8} {'NetRet%':>8} {'Sharpe':>7} {'MaxDD%':>7}"
+        print(header)
+        print("-" * len(header))
+        for r in runs:
+            ts = r["start_time"]
+            dt = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m-%d %H:%M")
+            t = r["tags"].get("ticker", r["params"].get("ticker", "—"))
+            m = r["metrics"]
+            acc = f"{m.get(f'{hk}.accuracy', float('nan')):.3f}"
+            wr = f"{m.get(f'{hk}.win_rate', float('nan')):.3f}"
+            nr = f"{m.get(f'{hk}.net_return', float('nan')):+.2f}"
+            sh = f"{m.get(f'{hk}.sharpe', float('nan')):+.2f}"
+            dd = f"{m.get(f'{hk}.max_drawdown', float('nan')):+.2f}"
+            print(f"{dt:<22} {t:<14} {acc:>6} {wr:>8} {nr:>8} {sh:>7} {dd:>7}")
+    else:
+        header = f"{'Date':<22} {'Run name':<40} {'TestAcc':>8} {'TestLoss':>9}"
+        print(header)
+        print("-" * len(header))
+        for r in runs:
+            ts = r["start_time"]
+            dt = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m-%d %H:%M")
+            name = (r["run_name"] or "—")[:39]
+            acc = r["metrics"].get("test_signal_accuracy", float("nan"))
+            loss = r["metrics"].get("test_loss", float("nan"))
+            print(f"{dt:<22} {name:<40} {acc:>8.4f} {loss:>9.4f}")
 
 
 def cmd_calibrate(args):
@@ -237,55 +343,58 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # analyze command
-    analyze_parser = subparsers.add_parser(
-        "analyze", help="Analyze a single ticker"
-    )
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze a single ticker")
     analyze_parser.add_argument("ticker", help="Stock ticker symbol")
     analyze_parser.add_argument(
-        "--min-confidence", type=float, default=None, dest="min_confidence",
+        "--min-confidence",
+        type=float,
+        default=None,
+        dest="min_confidence",
         help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
     )
     analyze_parser.set_defaults(func=cmd_analyze)
 
     # scan command
-    scan_parser = subparsers.add_parser(
-        "scan", help="Scan multiple tickers for signals"
-    )
+    scan_parser = subparsers.add_parser("scan", help="Scan multiple tickers for signals")
+    scan_parser.add_argument("tickers", nargs="*", help="Ticker symbols (default: Swedish stocks)")
     scan_parser.add_argument(
-        "tickers", nargs="*", help="Ticker symbols (default: Swedish stocks)"
-    )
-    scan_parser.add_argument(
-        "--min-confidence", type=float, default=None, dest="min_confidence",
+        "--min-confidence",
+        type=float,
+        default=None,
+        dest="min_confidence",
         help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
     )
     scan_parser.set_defaults(func=cmd_scan)
 
     # train command
     train_parser = subparsers.add_parser("train", help="Train the signal model")
+    train_parser.add_argument("tickers", nargs="*", help="Ticker symbols for training data")
+    train_parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    train_parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
     train_parser.add_argument(
-        "tickers", nargs="*", help="Ticker symbols for training data"
+        "--walk-forward",
+        action="store_true",
+        help="Use walk-forward training with periodic retraining",
     )
     train_parser.add_argument(
-        "--epochs", type=int, default=50, help="Number of training epochs"
+        "--initial-days",
+        type=int,
+        default=500,
+        help="Initial training window size in days (walk-forward only)",
     )
     train_parser.add_argument(
-        "--batch-size", type=int, default=32, help="Training batch size"
+        "--window-size",
+        type=int,
+        default=60,
+        help="Validation window size in days (walk-forward only)",
     )
     train_parser.add_argument(
-        "--walk-forward", action="store_true",
-        help="Use walk-forward training with periodic retraining"
+        "--no-focal-loss",
+        action="store_true",
+        help="Disable focal loss (use standard cross-entropy)",
     )
     train_parser.add_argument(
-        "--initial-days", type=int, default=500,
-        help="Initial training window size in days (walk-forward only)"
-    )
-    train_parser.add_argument(
-        "--window-size", type=int, default=60,
-        help="Validation window size in days (walk-forward only)"
-    )
-    train_parser.add_argument(
-        "--no-focal-loss", action="store_true",
-        help="Disable focal loss (use standard cross-entropy)"
+        "--no-mlflow", action="store_true", help="Disable MLflow experiment tracking"
     )
     train_parser.set_defaults(func=cmd_train)
 
@@ -317,25 +426,60 @@ Examples:
         help="Output file path for results (JSON or CSV)",
     )
     backtest_parser.add_argument(
-        "--commission", type=float, default=0.001,
+        "--commission",
+        type=float,
+        default=0.001,
         help="One-way commission as decimal (default: 0.001 = 0.1%%)",
     )
+    backtest_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow logging of backtest results",
+    )
     backtest_parser.set_defaults(func=cmd_backtest)
+
+    # history command
+    history_parser = subparsers.add_parser(
+        "history", help="Show trend of backtest/training results from MLflow"
+    )
+    history_parser.add_argument(
+        "--type",
+        default="backtest",
+        choices=["backtest", "standard", "walk-forward"],
+        help="Run type to query (default: backtest)",
+    )
+    history_parser.add_argument(
+        "--ticker",
+        default=None,
+        help="Filter by ticker symbol",
+    )
+    history_parser.add_argument(
+        "--horizon",
+        type=int,
+        default=5,
+        help="Prediction horizon to display for backtest runs (default: 5)",
+    )
+    history_parser.add_argument(
+        "--runs",
+        type=int,
+        default=20,
+        help="Number of recent runs to show (default: 20)",
+    )
+    history_parser.set_defaults(func=cmd_history)
 
     # calibrate command
     calibrate_parser = subparsers.add_parser(
         "calibrate", help="Train confidence calibrator from backtest data"
     )
+    calibrate_parser.add_argument("tickers", nargs="*", help="Ticker symbols for calibration data")
     calibrate_parser.add_argument(
-        "tickers", nargs="*", help="Ticker symbols for calibration data"
+        "--horizon",
+        type=int,
+        default=5,
+        help="Prediction horizon to use for calibration (default: 5)",
     )
     calibrate_parser.add_argument(
-        "--horizon", type=int, default=5,
-        help="Prediction horizon to use for calibration (default: 5)"
-    )
-    calibrate_parser.add_argument(
-        "--buckets", type=int, default=10,
-        help="Number of calibration buckets (default: 10)"
+        "--buckets", type=int, default=10, help="Number of calibration buckets (default: 10)"
     )
     calibrate_parser.add_argument(
         "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"

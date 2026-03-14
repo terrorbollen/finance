@@ -8,6 +8,7 @@ from enum import Enum
 
 class Signal(Enum):
     """Trading signal direction."""
+
     BUY = 0
     HOLD = 1
     SELL = 2
@@ -16,6 +17,7 @@ class Signal(Enum):
 @dataclass
 class HorizonPrediction:
     """Single horizon prediction made on a specific date."""
+
     prediction_date: date
     horizon_days: int
     predicted_signal: Signal
@@ -51,6 +53,7 @@ class HorizonPrediction:
 @dataclass
 class DailyPrediction:
     """All predictions made on a single day for multiple horizons."""
+
     date: date
     current_price: float
     predictions: dict[int, HorizonPrediction] = field(default_factory=dict)  # horizon -> prediction
@@ -69,6 +72,7 @@ class DailyPrediction:
 @dataclass
 class ClassMetrics:
     """Precision and recall for a single class."""
+
     precision: float
     recall: float
     support: int  # number of actual instances
@@ -84,6 +88,7 @@ class ClassMetrics:
 @dataclass
 class HorizonMetrics:
     """Aggregated metrics for a single prediction horizon."""
+
     horizon_days: int
     total_predictions: int
 
@@ -100,11 +105,11 @@ class HorizonMetrics:
 
     # Simulated trading metrics
     win_rate: float = 0.0
-    total_return: float = 0.0       # gross return (%)
-    net_total_return: float = 0.0   # after transaction costs (%)
+    total_return: float = 0.0  # gross return (%)
+    net_total_return: float = 0.0  # after transaction costs (%)
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
-    max_drawdown: float = 0.0       # negative percentage
+    max_drawdown: float = 0.0  # negative percentage
     calmar_ratio: float = 0.0
 
     def to_dict(self) -> dict:
@@ -129,6 +134,7 @@ class HorizonMetrics:
 @dataclass
 class BacktestResult:
     """Complete backtest results with all predictions and metrics."""
+
     ticker: str
     start_date: date
     end_date: date
@@ -158,49 +164,67 @@ class BacktestResult:
             hold_metrics = metrics.class_metrics.get(Signal.HOLD)
             sell_metrics = metrics.class_metrics.get(Signal.SELL)
 
-            buy_str = f"{buy_metrics.precision*100:.1f}%/{buy_metrics.recall*100:.1f}%" if buy_metrics else "N/A"
-            hold_str = f"{hold_metrics.precision*100:.1f}%/{hold_metrics.recall*100:.1f}%" if hold_metrics else "N/A"
-            sell_str = f"{sell_metrics.precision*100:.1f}%/{sell_metrics.recall*100:.1f}%" if sell_metrics else "N/A"
-
-            lines.append(
-                f"{horizon}-day{'':<5} {metrics.accuracy*100:.1f}%{'':<7} {buy_str:<16} {hold_str:<16} {sell_str:<16}"
+            buy_str = (
+                f"{buy_metrics.precision * 100:.1f}%/{buy_metrics.recall * 100:.1f}%"
+                if buy_metrics
+                else "N/A"
+            )
+            hold_str = (
+                f"{hold_metrics.precision * 100:.1f}%/{hold_metrics.recall * 100:.1f}%"
+                if hold_metrics
+                else "N/A"
+            )
+            sell_str = (
+                f"{sell_metrics.precision * 100:.1f}%/{sell_metrics.recall * 100:.1f}%"
+                if sell_metrics
+                else "N/A"
             )
 
-        lines.extend([
-            "",
-            "CONFIDENCE CALIBRATION",
-            "-" * 80,
-            f"{'Confidence':<15} {'Actual Accuracy':<20} (Is model well-calibrated?)",
-        ])
+            lines.append(
+                f"{horizon}-day{'':<5} {metrics.accuracy * 100:.1f}%{'':<7} {buy_str:<16} {hold_str:<16} {sell_str:<16}"
+            )
+
+        lines.extend(
+            [
+                "",
+                "CONFIDENCE CALIBRATION",
+                "-" * 80,
+                f"{'Confidence':<15} {'Actual Accuracy':<20} (Is model well-calibrated?)",
+            ]
+        )
 
         # Get calibration from first horizon with data
         if self.horizon_metrics:
             first_metrics = next(iter(self.horizon_metrics.values()))
             for bucket, actual in sorted(first_metrics.calibration.items()):
-                lines.append(f"{bucket:<15} {actual*100:.1f}%")
+                lines.append(f"{bucket:<15} {actual * 100:.1f}%")
 
-        lines.extend([
-            "",
-            "SIMULATED TRADING PERFORMANCE (per horizon)",
-            "-" * 80,
-            f"{'Horizon':<10} {'Win Rate':<10} {'Gross Ret':<12} {'Net Ret':<12} {'Sharpe':<8} {'Sortino':<8} {'Max DD':<10} {'Calmar':<8}",
-        ])
+        lines.extend(
+            [
+                "",
+                "SIMULATED TRADING PERFORMANCE (per horizon)",
+                "-" * 80,
+                f"{'Horizon':<10} {'Win Rate':<10} {'Gross Ret':<12} {'Net Ret':<12} {'Sharpe':<8} {'Sortino':<8} {'Max DD':<10} {'Calmar':<8}",
+            ]
+        )
 
         for horizon in sorted(self.horizon_metrics.keys()):
             m = self.horizon_metrics[horizon]
             dd_str = f"{m.max_drawdown:+.1f}%" if m.max_drawdown != 0.0 else "N/A"
             calmar_str = f"{m.calmar_ratio:.2f}" if m.calmar_ratio != 0.0 else "N/A"
             lines.append(
-                f"{horizon}-day{'':<5} {m.win_rate*100:.1f}%{'':<5} "
+                f"{horizon}-day{'':<5} {m.win_rate * 100:.1f}%{'':<5} "
                 f"{m.total_return:+.2f}%{'':<5} {m.net_total_return:+.2f}%{'':<5} "
                 f"{m.sharpe_ratio:.2f}{'':<4} {m.sortino_ratio:.2f}{'':<4} "
                 f"{dd_str:<10} {calmar_str}"
             )
 
-        lines.extend([
-            "",
-            f"Buy & Hold Return: {self.buy_hold_return:+.2f}%",
-        ])
+        lines.extend(
+            [
+                "",
+                f"Buy & Hold Return: {self.buy_hold_return:+.2f}%",
+            ]
+        )
 
         lines.append("=" * 80)
 
@@ -229,22 +253,34 @@ class BacktestResult:
 
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "prediction_date", "horizon_days", "predicted_signal", "confidence",
-                "predicted_price_change", "actual_signal", "actual_price_change",
-                "target_date", "is_correct"
-            ])
+            writer.writerow(
+                [
+                    "prediction_date",
+                    "horizon_days",
+                    "predicted_signal",
+                    "confidence",
+                    "predicted_price_change",
+                    "actual_signal",
+                    "actual_price_change",
+                    "target_date",
+                    "is_correct",
+                ]
+            )
 
             for daily in self.daily_predictions:
                 for _horizon, pred in daily.predictions.items():
-                    writer.writerow([
-                        pred.prediction_date.isoformat(),
-                        pred.horizon_days,
-                        pred.predicted_signal.name,
-                        pred.confidence,
-                        pred.predicted_price_change,
-                        pred.actual_signal.name if pred.actual_signal else "",
-                        pred.actual_price_change if pred.actual_price_change is not None else "",
-                        pred.target_date.isoformat() if pred.target_date else "",
-                        pred.is_correct if pred.is_correct is not None else "",
-                    ])
+                    writer.writerow(
+                        [
+                            pred.prediction_date.isoformat(),
+                            pred.horizon_days,
+                            pred.predicted_signal.name,
+                            pred.confidence,
+                            pred.predicted_price_change,
+                            pred.actual_signal.name if pred.actual_signal else "",
+                            pred.actual_price_change
+                            if pred.actual_price_change is not None
+                            else "",
+                            pred.target_date.isoformat() if pred.target_date else "",
+                            pred.is_correct if pred.is_correct is not None else "",
+                        ]
+                    )

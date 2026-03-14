@@ -1,6 +1,5 @@
 """Metrics calculation for backtesting results."""
 
-
 import numpy as np
 
 from backtesting.results import (
@@ -97,19 +96,22 @@ class MetricsCalculator:
         for signal_class in Signal:
             # True positives: predicted this class and it was correct
             tp = sum(
-                1 for p in predictions
+                1
+                for p in predictions
                 if p.predicted_signal == signal_class and p.actual_signal == signal_class
             )
 
             # False positives: predicted this class but it was wrong
             fp = sum(
-                1 for p in predictions
+                1
+                for p in predictions
                 if p.predicted_signal == signal_class and p.actual_signal != signal_class
             )
 
             # False negatives: actual was this class but predicted something else
             fn = sum(
-                1 for p in predictions
+                1
+                for p in predictions
                 if p.actual_signal == signal_class and p.predicted_signal != signal_class
             )
 
@@ -127,9 +129,7 @@ class MetricsCalculator:
 
         return metrics
 
-    def _calculate_calibration(
-        self, predictions: list[HorizonPrediction]
-    ) -> dict[str, float]:
+    def _calculate_calibration(self, predictions: list[HorizonPrediction]) -> dict[str, float]:
         """
         Calculate confidence calibration.
 
@@ -147,10 +147,7 @@ class MetricsCalculator:
         calibration = {}
 
         for bucket_name, (low, high) in buckets.items():
-            bucket_preds = [
-                p for p in predictions
-                if low <= p.confidence < high
-            ]
+            bucket_preds = [p for p in predictions if low <= p.confidence < high]
 
             if bucket_preds:
                 accuracy = sum(1 for p in bucket_preds if p.is_correct) / len(bucket_preds)
@@ -158,15 +155,10 @@ class MetricsCalculator:
 
         return calibration
 
-    def _calculate_price_metrics(
-        self, predictions: list[HorizonPrediction]
-    ) -> tuple[float, float]:
+    def _calculate_price_metrics(self, predictions: list[HorizonPrediction]) -> tuple[float, float]:
         """Calculate MAE and RMSE for price predictions."""
         # Filter predictions with price data
-        with_prices = [
-            p for p in predictions
-            if p.actual_price_change is not None
-        ]
+        with_prices = [p for p in predictions if p.actual_price_change is not None]
 
         if not with_prices:
             return 0.0, 0.0
@@ -187,9 +179,7 @@ class MetricsCalculator:
 
         return float(mae), float(rmse)
 
-    def _calculate_trading_metrics(
-        self, predictions: list[HorizonPrediction]
-    ) -> dict[str, float]:
+    def _calculate_trading_metrics(self, predictions: list[HorizonPrediction]) -> dict[str, float]:
         """
         Calculate simulated trading metrics including risk-adjusted returns.
 

@@ -56,9 +56,7 @@ class ModelTrainer:
         self.model: SignalModel | None = None
         self.feature_columns: list[str] = []
 
-    def prepare_data(
-        self, df: pd.DataFrame
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Prepare features and labels from raw price data.
 
@@ -77,9 +75,7 @@ class ModelTrainer:
 
         # Calculate future returns for labels
         df_features["future_return"] = (
-            df_features["close"].shift(-self.prediction_horizon)
-            / df_features["close"]
-            - 1
+            df_features["close"].shift(-self.prediction_horizon) / df_features["close"] - 1
         )
 
         # Determine thresholds
@@ -121,6 +117,7 @@ class ModelTrainer:
         model_path: str = "checkpoints/signal_model.weights.h5",
         use_focal_loss: bool = True,
         track_with_mlflow: bool = True,
+        tags: dict[str, str] | None = None,
     ) -> dict:
         """
         Train the model on given tickers.
@@ -137,7 +134,7 @@ class ModelTrainer:
         """
         # Setup MLflow tracking if enabled
         if track_with_mlflow:
-            setup_mlflow(experiment_name="signal-model-training")
+            setup_mlflow()
 
         # Fetch and combine data from all tickers
         fetcher = StockDataFetcher(period="5y")
@@ -183,15 +180,11 @@ class ModelTrainer:
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Create sequences
-        X, y_signal, y_price = create_sequences(
-            features, labels, prices, self.sequence_length
-        )
+        X, y_signal, y_price = create_sequences(features, labels, prices, self.sequence_length)
 
         # Compute class weights to handle imbalance
         class_weights = compute_class_weight(
-            class_weight="balanced",
-            classes=np.array([0, 1, 2]),
-            y=y_signal
+            class_weight="balanced", classes=np.array([0, 1, 2]), y=y_signal
         )
         class_weight_dict = dict(enumerate(class_weights))
         print("Class weights (to balance training):")
@@ -307,27 +300,33 @@ class ModelTrainer:
         if track_with_mlflow:
             run_name = f"train-{'-'.join(tickers[:3])}"
             if len(tickers) > 3:
-                run_name += f"-+{len(tickers)-3}"
+                run_name += f"-+{len(tickers) - 3}"
 
-            with training_run(run_name=run_name, tags={"tickers": ",".join(tickers)}):
+            run_tags = {"tickers": ",".join(tickers), "run_type": "standard"}
+            if tags:
+                run_tags.update(tags)
+
+            with training_run(run_name=run_name, tags=run_tags):
                 # Log hyperparameters
-                log_hyperparameters({
-                    "sequence_length": self.sequence_length,
-                    "train_ratio": self.train_ratio,
-                    "val_ratio": self.val_ratio,
-                    "prediction_horizon": self.prediction_horizon,
-                    "buy_threshold": self.buy_threshold,
-                    "sell_threshold": self.sell_threshold,
-                    "use_adaptive_thresholds": self.use_adaptive_thresholds,
-                    "epochs": epochs,
-                    "batch_size": batch_size,
-                    "use_focal_loss": use_focal_loss,
-                    "num_tickers": len(tickers),
-                    "train_samples": len(X_train),
-                    "val_samples": len(X_val),
-                    "test_samples": len(X_test),
-                    "input_dim": input_dim,
-                })
+                log_hyperparameters(
+                    {
+                        "sequence_length": self.sequence_length,
+                        "train_ratio": self.train_ratio,
+                        "val_ratio": self.val_ratio,
+                        "prediction_horizon": self.prediction_horizon,
+                        "buy_threshold": self.buy_threshold,
+                        "sell_threshold": self.sell_threshold,
+                        "use_adaptive_thresholds": self.use_adaptive_thresholds,
+                        "epochs": epochs,
+                        "batch_size": batch_size,
+                        "use_focal_loss": use_focal_loss,
+                        "num_tickers": len(tickers),
+                        "train_samples": len(X_train),
+                        "val_samples": len(X_val),
+                        "test_samples": len(X_test),
+                        "input_dim": input_dim,
+                    }
+                )
 
                 history, test_results, config_path = _do_training()
 
@@ -335,11 +334,13 @@ class ModelTrainer:
                 log_training_history(history.history)
 
                 # Log final test metrics
-                log_metrics({
-                    "test_loss": test_results["loss"],
-                    "test_signal_accuracy": test_results["signal_accuracy"],
-                    "test_price_mae": test_results["price_target_mae"],
-                })
+                log_metrics(
+                    {
+                        "test_loss": test_results["loss"],
+                        "test_signal_accuracy": test_results["signal_accuracy"],
+                        "test_price_mae": test_results["price_target_mae"],
+                    }
+                )
 
                 # Log model artifacts
                 log_model_artifact(model_path, artifact_path="model")

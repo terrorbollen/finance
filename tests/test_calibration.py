@@ -141,9 +141,7 @@ class TestConfidenceCalibrator:
 
         assert "not fitted" in table.lower()
 
-    def test_get_calibration_table_fitted(
-        self, sample_confidences: tuple[np.ndarray, np.ndarray]
-    ):
+    def test_get_calibration_table_fitted(self, sample_confidences: tuple[np.ndarray, np.ndarray]):
         """Test calibration table for fitted calibrator."""
         confidences, correct = sample_confidences
         calibrator = ConfidenceCalibrator(num_buckets=5)

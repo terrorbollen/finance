@@ -192,9 +192,9 @@ class ConfidenceCalibrator:
         ]
 
         for bucket in self.buckets:
-            raw_range = f"{bucket.raw_min*100:.0f}%-{bucket.raw_max*100:.0f}%"
+            raw_range = f"{bucket.raw_min * 100:.0f}%-{bucket.raw_max * 100:.0f}%"
             lines.append(
-                f"{raw_range:<20} {bucket.calibrated*100:.1f}%{'':<9} {bucket.sample_count:<10}"
+                f"{raw_range:<20} {bucket.calibrated * 100:.1f}%{'':<9} {bucket.sample_count:<10}"
             )
 
         return "\n".join(lines)

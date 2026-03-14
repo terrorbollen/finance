@@ -51,7 +51,7 @@ def sparse_focal_loss(gamma: float = 2.0, alpha: float = 0.25):
         return tf.reduce_mean(tf.reduce_sum(focal_loss, axis=-1))
 
     # Set function name for Keras
-    focal_loss_fn.__name__ = f'sparse_focal_loss_g{gamma}_a{alpha}'
+    focal_loss_fn.__name__ = f"sparse_focal_loss_g{gamma}_a{alpha}"
 
     return focal_loss_fn
 
@@ -103,6 +103,6 @@ def balanced_focal_loss(gamma: float = 2.0, class_weights: list | None = None):
 
         return tf.reduce_mean(weighted_loss)
 
-    balanced_focal_loss_fn.__name__ = f'balanced_focal_loss_g{gamma}'
+    balanced_focal_loss_fn.__name__ = f"balanced_focal_loss_g{gamma}"
 
     return balanced_focal_loss_fn
