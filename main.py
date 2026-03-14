@@ -3,10 +3,12 @@
 
 import argparse
 import sys
+from datetime import datetime
 
 from data.fetcher import StockDataFetcher
 from signals.generator import SignalGenerator
 from models.training import ModelTrainer
+from backtesting import Backtester
 
 
 def cmd_analyze(args):
@@ -86,6 +88,49 @@ def cmd_list(args):
         print(f"{alias:<20} {symbol:<20}")
 
 
+def cmd_backtest(args):
+    """Run backtesting on historical data."""
+    print(f"\nBacktesting {args.ticker}...")
+
+    # Parse dates
+    start_date = None
+    end_date = None
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+
+    # Parse horizons
+    horizons = args.horizons if args.horizons else [1, 2, 3, 4, 5, 6, 7]
+
+    backtester = Backtester()
+    try:
+        result = backtester.run(
+            ticker=args.ticker,
+            start_date=start_date,
+            end_date=end_date,
+            horizons=horizons,
+        )
+
+        # Print summary
+        print(result.summary())
+
+        # Export if requested
+        if args.output:
+            if args.output.endswith(".csv"):
+                result.export_csv(args.output)
+                print(f"\nResults exported to {args.output}")
+            else:
+                # Default to JSON
+                output_path = args.output if args.output.endswith(".json") else args.output + ".json"
+                result.export_json(output_path)
+                print(f"\nResults exported to {output_path}")
+
+    except Exception as e:
+        print(f"Backtest error: {e}")
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -99,6 +144,8 @@ Examples:
   %(prog)s scan ERIC-B.ST HM-B.ST   Scan specific tickers
   %(prog)s train --epochs 100    Train model with 100 epochs
   %(prog)s list                  List available tickers
+  %(prog)s backtest ^OMXS30      Backtest on OMX Stockholm 30
+  %(prog)s backtest VOLV-B.ST --horizons 1 3 5 7  Backtest specific horizons
         """,
     )
 
@@ -136,6 +183,31 @@ Examples:
     # list command
     list_parser = subparsers.add_parser("list", help="List available tickers")
     list_parser.set_defaults(func=cmd_list)
+
+    # backtest command
+    backtest_parser = subparsers.add_parser(
+        "backtest", help="Backtest the model on historical data"
+    )
+    backtest_parser.add_argument("ticker", help="Stock ticker symbol")
+    backtest_parser.add_argument(
+        "--horizons",
+        type=int,
+        nargs="+",
+        help="Prediction horizons in days (default: 1 2 3 4 5 6 7)",
+    )
+    backtest_parser.add_argument(
+        "--start-date",
+        help="Start date for backtest (YYYY-MM-DD)",
+    )
+    backtest_parser.add_argument(
+        "--end-date",
+        help="End date for backtest (YYYY-MM-DD)",
+    )
+    backtest_parser.add_argument(
+        "--output",
+        help="Output file path for results (JSON or CSV)",
+    )
+    backtest_parser.set_defaults(func=cmd_backtest)
 
     # Parse and execute
     args = parser.parse_args()
