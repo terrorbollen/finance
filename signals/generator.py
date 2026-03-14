@@ -1,0 +1,222 @@
+"""Signal generation logic combining model predictions into actionable signals."""
+
+import json
+import numpy as np
+import pandas as pd
+from dataclasses import dataclass
+from typing import Optional
+from enum import Enum
+import os
+
+from data.fetcher import StockDataFetcher
+from data.features import FeatureEngineer
+from models.signal_model import SignalModel
+
+
+class Direction(Enum):
+    """Trading signal direction."""
+
+    BUY = "BUY"
+    HOLD = "HOLD"
+    SELL = "SELL"
+
+
+@dataclass
+class Signal:
+    """Trading signal with all relevant information."""
+
+    ticker: str
+    direction: Direction
+    confidence: float  # 0-100%
+    current_price: float
+    entry_price: float
+    target_price: float
+    stop_loss: float
+    predicted_change: float  # Percentage
+    timestamp: str
+
+    def __str__(self) -> str:
+        """Format signal for display."""
+        lines = [
+            f"{'='*50}",
+            f"  SIGNAL: {self.ticker}",
+            f"{'='*50}",
+            f"  Direction:        {self.direction.value}",
+            f"  Confidence:       {self.confidence:.1f}%",
+            f"  Current Price:    {self.current_price:.2f}",
+            f"  Entry Price:      {self.entry_price:.2f}",
+            f"  Target Price:     {self.target_price:.2f} ({self.predicted_change:+.2f}%)",
+            f"  Stop Loss:        {self.stop_loss:.2f}",
+            f"  Generated:        {self.timestamp}",
+            f"{'='*50}",
+        ]
+        return "\n".join(lines)
+
+
+class SignalGenerator:
+    """Generates trading signals using the trained model."""
+
+    def __init__(
+        self,
+        model_path: str = "checkpoints/signal_model.weights.h5",
+        sequence_length: int = 20,
+        stop_loss_pct: float = 0.05,
+    ):
+        """
+        Initialize the signal generator.
+
+        Args:
+            model_path: Path to trained model weights
+            sequence_length: Sequence length used during training
+            stop_loss_pct: Default stop loss percentage
+        """
+        self.model_path = model_path
+        self.sequence_length = sequence_length
+        self.stop_loss_pct = stop_loss_pct
+        self.model: Optional[SignalModel] = None
+        self.fetcher = StockDataFetcher(period="1y")
+
+        # Normalization params (should match training)
+        self.feature_mean: Optional[np.ndarray] = None
+        self.feature_std: Optional[np.ndarray] = None
+        self.feature_columns: Optional[list[str]] = None
+        self.input_dim: Optional[int] = None
+
+        # Load training config if available
+        self._load_config()
+
+    def _load_config(self):
+        """Load training configuration from file."""
+        config_path = self.model_path.replace(".weights.h5", "_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            self.feature_columns = config.get("feature_columns")
+            self.feature_mean = np.array(config.get("feature_mean"))
+            self.feature_std = np.array(config.get("feature_std"))
+            self.sequence_length = config.get("sequence_length", self.sequence_length)
+            self.input_dim = config.get("input_dim")
+
+    def _load_model(self, input_dim: int):
+        """Load the trained model."""
+        self.model = SignalModel(
+            input_dim=input_dim, sequence_length=self.sequence_length
+        )
+        try:
+            self.model.load(self.model_path)
+        except Exception as e:
+            print(f"Warning: Could not load model weights: {e}")
+            print("Using untrained model (predictions will be random)")
+
+    def generate(self, ticker: str) -> Signal:
+        """
+        Generate a trading signal for a given ticker.
+
+        Args:
+            ticker: Stock ticker symbol
+
+        Returns:
+            Signal object with direction, confidence, and price targets
+        """
+        # Fetch data
+        df = self.fetcher.fetch(ticker)
+
+        # Add features
+        engineer = FeatureEngineer(df)
+        df_features = engineer.add_all_features()
+
+        # Use feature columns from training config if available
+        if self.feature_columns is not None:
+            # Filter to only columns that exist in the data
+            available_cols = [c for c in self.feature_columns if c in df_features.columns]
+            if len(available_cols) != len(self.feature_columns):
+                missing = set(self.feature_columns) - set(available_cols)
+                print(f"Warning: Missing features from training: {missing}")
+            feature_cols = available_cols
+        else:
+            feature_cols = engineer.get_feature_columns()
+
+        features = df_features[feature_cols].values
+
+        # Initialize model if needed
+        if self.model is None:
+            input_dim = self.input_dim if self.input_dim else len(feature_cols)
+            self._load_model(input_dim=input_dim)
+
+        # Normalize features using training statistics if available
+        if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
+            features_norm = (features - self.feature_mean) / self.feature_std
+        else:
+            # Fallback to current data statistics
+            mean = features.mean(axis=0)
+            std = features.std(axis=0) + 1e-8
+            features_norm = (features - mean) / std
+
+        # Create sequence from most recent data
+        if len(features_norm) < self.sequence_length:
+            raise ValueError(
+                f"Not enough data points. Need {self.sequence_length}, got {len(features_norm)}"
+            )
+
+        X = features_norm[-self.sequence_length :].reshape(
+            1, self.sequence_length, -1
+        )
+
+        # Get predictions
+        signal_probs, signal_class, price_target = self.model.predict(X)
+
+        # Extract values
+        direction_idx = signal_class[0]
+        direction = [Direction.BUY, Direction.HOLD, Direction.SELL][direction_idx]
+        confidence = float(signal_probs[0][direction_idx]) * 100
+        predicted_change = float(price_target[0])
+
+        # Current price
+        current_price = float(df_features["close"].iloc[-1])
+
+        # Calculate price targets
+        entry_price = current_price
+        target_price = current_price * (1 + predicted_change / 100)
+
+        # Stop loss based on direction
+        if direction == Direction.BUY:
+            stop_loss = current_price * (1 - self.stop_loss_pct)
+        elif direction == Direction.SELL:
+            stop_loss = current_price * (1 + self.stop_loss_pct)
+        else:
+            stop_loss = current_price * (1 - self.stop_loss_pct)
+
+        # Create signal
+        return Signal(
+            ticker=ticker,
+            direction=direction,
+            confidence=confidence,
+            current_price=current_price,
+            entry_price=entry_price,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            predicted_change=predicted_change,
+            timestamp=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def scan(self, tickers: list[str]) -> list[Signal]:
+        """
+        Generate signals for multiple tickers.
+
+        Args:
+            tickers: List of ticker symbols
+
+        Returns:
+            List of Signal objects
+        """
+        signals = []
+        for ticker in tickers:
+            try:
+                signal = self.generate(ticker)
+                signals.append(signal)
+            except Exception as e:
+                print(f"Error generating signal for {ticker}: {e}")
+
+        # Sort by confidence
+        signals.sort(key=lambda s: s.confidence, reverse=True)
+        return signals
