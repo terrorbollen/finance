@@ -11,6 +11,7 @@ import os
 from data.fetcher import StockDataFetcher
 from data.features import FeatureEngineer
 from models.signal_model import SignalModel
+from signals.calibration import ConfidenceCalibrator
 
 
 class Direction(Enum):
@@ -27,22 +28,29 @@ class Signal:
 
     ticker: str
     direction: Direction
-    confidence: float  # 0-100%
+    confidence: float  # 0-100% (calibrated if calibrator available)
     current_price: float
     entry_price: float
     target_price: float
     stop_loss: float
     predicted_change: float  # Percentage
     timestamp: str
+    raw_confidence: Optional[float] = None  # 0-100% (raw model output)
+    is_calibrated: bool = False
 
     def __str__(self) -> str:
         """Format signal for display."""
+        if self.is_calibrated and self.raw_confidence is not None:
+            confidence_str = f"{self.confidence:.1f}% (raw: {self.raw_confidence:.1f}%)"
+        else:
+            confidence_str = f"{self.confidence:.1f}%"
+
         lines = [
             f"{'='*50}",
             f"  SIGNAL: {self.ticker}",
             f"{'='*50}",
             f"  Direction:        {self.direction.value}",
-            f"  Confidence:       {self.confidence:.1f}%",
+            f"  Confidence:       {confidence_str}",
             f"  Current Price:    {self.current_price:.2f}",
             f"  Entry Price:      {self.entry_price:.2f}",
             f"  Target Price:     {self.target_price:.2f} ({self.predicted_change:+.2f}%)",
@@ -61,6 +69,7 @@ class SignalGenerator:
         model_path: str = "checkpoints/signal_model.weights.h5",
         sequence_length: int = 20,
         stop_loss_pct: float = 0.05,
+        calibration_path: Optional[str] = None,
     ):
         """
         Initialize the signal generator.
@@ -69,6 +78,7 @@ class SignalGenerator:
             model_path: Path to trained model weights
             sequence_length: Sequence length used during training
             stop_loss_pct: Default stop loss percentage
+            calibration_path: Path to calibration JSON (default: checkpoints/calibration.json)
         """
         self.model_path = model_path
         self.sequence_length = sequence_length
@@ -82,8 +92,13 @@ class SignalGenerator:
         self.feature_columns: Optional[list[str]] = None
         self.input_dim: Optional[int] = None
 
+        # Confidence calibration
+        self.calibrator: Optional[ConfidenceCalibrator] = None
+        self.calibration_path = calibration_path or "checkpoints/calibration.json"
+
         # Load training config if available
         self._load_config()
+        self._load_calibrator()
 
     def _load_config(self):
         """Load training configuration from file."""
@@ -96,6 +111,16 @@ class SignalGenerator:
             self.feature_std = np.array(config.get("feature_std"))
             self.sequence_length = config.get("sequence_length", self.sequence_length)
             self.input_dim = config.get("input_dim")
+
+    def _load_calibrator(self):
+        """Load confidence calibrator if available."""
+        if os.path.exists(self.calibration_path):
+            try:
+                self.calibrator = ConfidenceCalibrator.load(self.calibration_path)
+                print(f"Loaded confidence calibration from {self.calibration_path}")
+            except Exception as e:
+                print(f"Warning: Could not load calibration: {e}")
+                self.calibrator = None
 
     def _load_model(self, input_dim: int):
         """Load the trained model."""
@@ -168,8 +193,19 @@ class SignalGenerator:
         # Extract values
         direction_idx = signal_class[0]
         direction = [Direction.BUY, Direction.HOLD, Direction.SELL][direction_idx]
-        confidence = float(signal_probs[0][direction_idx]) * 100
+        raw_confidence = float(signal_probs[0][direction_idx])
         predicted_change = float(price_target[0])
+
+        # Apply confidence calibration if available
+        if self.calibrator is not None and self.calibrator.is_fitted:
+            calibrated_confidence = self.calibrator.calibrate(raw_confidence)
+            confidence = calibrated_confidence * 100
+            raw_confidence_pct = raw_confidence * 100
+            is_calibrated = True
+        else:
+            confidence = raw_confidence * 100
+            raw_confidence_pct = None
+            is_calibrated = False
 
         # Current price
         current_price = float(df_features["close"].iloc[-1])
@@ -197,6 +233,8 @@ class SignalGenerator:
             stop_loss=stop_loss,
             predicted_change=predicted_change,
             timestamp=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            raw_confidence=raw_confidence_pct,
+            is_calibrated=is_calibrated,
         )
 
     def scan(self, tickers: list[str]) -> list[Signal]:

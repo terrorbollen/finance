@@ -7,7 +7,9 @@ from datetime import datetime
 
 from data.fetcher import StockDataFetcher
 from signals.generator import SignalGenerator
+from signals.calibration import ConfidenceCalibrator
 from models.training import ModelTrainer
+from models.walk_forward import WalkForwardTrainer
 from backtesting import Backtester
 
 
@@ -71,17 +73,34 @@ def cmd_train(args):
 
     print(f"\nTraining model on {len(tickers)} tickers...")
     print(f"Epochs: {args.epochs}")
+    print(f"Walk-forward: {args.walk_forward}")
     print("-" * 50)
 
-    trainer = ModelTrainer()
     try:
-        results = trainer.train(
-            tickers=tickers,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-        )
-        print("\nTraining complete!")
-        print(f"Final test accuracy: {results['test_signal_accuracy']:.4f}")
+        if args.walk_forward:
+            # Walk-forward training
+            trainer = WalkForwardTrainer(
+                initial_train_days=args.initial_days,
+                validation_days=args.window_size,
+                step_days=args.window_size,
+            )
+            results = trainer.run(
+                tickers=tickers,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+            )
+            print("\n" + results.summary())
+        else:
+            # Standard training
+            trainer = ModelTrainer()
+            results = trainer.train(
+                tickers=tickers,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                use_focal_loss=not args.no_focal_loss,
+            )
+            print("\nTraining complete!")
+            print(f"Final test accuracy: {results['test_signal_accuracy']:.4f}")
     except Exception as e:
         print(f"Training error: {e}")
         sys.exit(1)
@@ -143,6 +162,67 @@ def cmd_backtest(args):
         sys.exit(1)
 
 
+def cmd_calibrate(args):
+    """Train confidence calibrator from backtest results."""
+    import json
+    import numpy as np
+
+    if args.tickers:
+        tickers = args.tickers
+    else:
+        # Default: use major Swedish stocks
+        tickers = ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
+
+    print(f"\nCalibrating confidence using {len(tickers)} tickers...")
+    print(f"Horizon: {args.horizon} days")
+    print("-" * 50)
+
+    # Collect backtest results
+    all_confidences = []
+    all_correct = []
+
+    backtester = Backtester()
+
+    for ticker in tickers:
+        try:
+            print(f"Backtesting {ticker}...")
+            result = backtester.run(
+                ticker=ticker,
+                horizons=[args.horizon],
+            )
+
+            # Extract confidence and correctness
+            for daily in result.daily_predictions:
+                pred = daily.predictions.get(args.horizon)
+                if pred and pred.is_correct is not None:
+                    all_confidences.append(pred.confidence)
+                    all_correct.append(pred.is_correct)
+
+        except Exception as e:
+            print(f"  Warning: Could not backtest {ticker}: {e}")
+
+    if len(all_confidences) < 100:
+        print(f"\nError: Not enough data points ({len(all_confidences)}). Need at least 100.")
+        sys.exit(1)
+
+    print(f"\nCollected {len(all_confidences)} predictions")
+
+    # Fit calibrator
+    calibrator = ConfidenceCalibrator(num_buckets=args.buckets)
+    calibrator.fit(
+        np.array(all_confidences),
+        np.array(all_correct),
+    )
+
+    # Display calibration table
+    print("\n" + calibrator.get_calibration_table())
+
+    # Save calibrator
+    output_path = args.output or "checkpoints/calibration.json"
+    calibrator.save(output_path)
+    print(f"\nCalibration saved to {output_path}")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -158,6 +238,8 @@ Examples:
   %(prog)s list                  List available tickers
   %(prog)s backtest ^OMXS30      Backtest on OMX Stockholm 30
   %(prog)s backtest VOLV-B.ST --horizons 1 3 5 7  Backtest specific horizons
+  %(prog)s calibrate             Calibrate confidence using default tickers
+  %(prog)s calibrate --horizon 3 Train calibrator for 3-day predictions
         """,
     )
 
@@ -190,6 +272,22 @@ Examples:
     train_parser.add_argument(
         "--batch-size", type=int, default=32, help="Training batch size"
     )
+    train_parser.add_argument(
+        "--walk-forward", action="store_true",
+        help="Use walk-forward training with periodic retraining"
+    )
+    train_parser.add_argument(
+        "--initial-days", type=int, default=500,
+        help="Initial training window size in days (walk-forward only)"
+    )
+    train_parser.add_argument(
+        "--window-size", type=int, default=60,
+        help="Validation window size in days (walk-forward only)"
+    )
+    train_parser.add_argument(
+        "--no-focal-loss", action="store_true",
+        help="Disable focal loss (use standard cross-entropy)"
+    )
     train_parser.set_defaults(func=cmd_train)
 
     # list command
@@ -220,6 +318,26 @@ Examples:
         help="Output file path for results (JSON or CSV)",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
+
+    # calibrate command
+    calibrate_parser = subparsers.add_parser(
+        "calibrate", help="Train confidence calibrator from backtest data"
+    )
+    calibrate_parser.add_argument(
+        "tickers", nargs="*", help="Ticker symbols for calibration data"
+    )
+    calibrate_parser.add_argument(
+        "--horizon", type=int, default=5,
+        help="Prediction horizon to use for calibration (default: 5)"
+    )
+    calibrate_parser.add_argument(
+        "--buckets", type=int, default=10,
+        help="Number of calibration buckets (default: 10)"
+    )
+    calibrate_parser.add_argument(
+        "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"
+    )
+    calibrate_parser.set_defaults(func=cmd_calibrate)
 
     # Parse and execute
     args = parser.parse_args()

@@ -11,6 +11,14 @@ import os
 from models.signal_model import SignalModel, create_sequences
 from data.fetcher import StockDataFetcher
 from data.features import FeatureEngineer
+from models.mlflow_tracking import (
+    setup_mlflow,
+    training_run,
+    log_hyperparameters,
+    log_metrics,
+    log_model_artifact,
+    log_training_history,
+)
 
 
 class ModelTrainer:
@@ -111,6 +119,8 @@ class ModelTrainer:
         epochs: int = 50,
         batch_size: int = 32,
         model_path: str = "checkpoints/signal_model.weights.h5",
+        use_focal_loss: bool = True,
+        track_with_mlflow: bool = True,
     ) -> dict:
         """
         Train the model on given tickers.
@@ -120,10 +130,15 @@ class ModelTrainer:
             epochs: Number of training epochs
             batch_size: Batch size for training
             model_path: Path to save best model weights
+            track_with_mlflow: Whether to track experiment with MLflow
 
         Returns:
             Dictionary with training history and metrics
         """
+        # Setup MLflow tracking if enabled
+        if track_with_mlflow:
+            setup_mlflow(experiment_name="signal-model-training")
+
         # Fetch and combine data from all tickers
         fetcher = StockDataFetcher(period="5y")
         all_features, all_labels, all_prices = [], [], []
@@ -215,64 +230,121 @@ class ModelTrainer:
 
         # Build model
         input_dim = X.shape[2]
-        self.model = SignalModel(
-            input_dim=input_dim, sequence_length=self.sequence_length
-        )
 
-        # Callbacks
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        callbacks = [
-            keras.callbacks.ModelCheckpoint(
-                model_path, save_best_only=True, save_weights_only=True, monitor="val_loss"
-            ),
-            keras.callbacks.EarlyStopping(
-                patience=10, restore_best_weights=True, monitor="val_loss"
-            ),
-            keras.callbacks.ReduceLROnPlateau(
-                factor=0.5, patience=5, min_lr=1e-6, monitor="val_loss"
-            ),
-        ]
+        def _do_training():
+            """Inner function to run training (optionally wrapped in MLflow context)."""
+            self.model = SignalModel(
+                input_dim=input_dim,
+                sequence_length=self.sequence_length,
+                use_focal_loss=use_focal_loss,
+            )
 
-        # Train with sample weights to handle class imbalance
-        # For multi-output models, sample_weight should be a list [weights_for_output1, weights_for_output2]
-        history = self.model.model.fit(
-            X_train,
-            [y_signal_train, y_price_train],  # Use list format for outputs
-            sample_weight=[sw_train, np.ones_like(sw_train)],  # Weights for signal, uniform for price
-            validation_data=(
-                X_val,
-                [y_signal_val, y_price_val],
-            ),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks,
-            verbose=1,
-        )
+            if use_focal_loss:
+                print("Using Focal Loss (handles class imbalance internally)")
 
-        # Evaluate on test set
-        test_results = self.model.model.evaluate(
-            X_test,
-            [y_signal_test, y_price_test],
-            verbose=0,
-            return_dict=True,
-        )
+            # Callbacks
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            callbacks = [
+                keras.callbacks.ModelCheckpoint(
+                    model_path, save_best_only=True, save_weights_only=True, monitor="val_loss"
+                ),
+                keras.callbacks.EarlyStopping(
+                    patience=10, restore_best_weights=True, monitor="val_loss"
+                ),
+                keras.callbacks.ReduceLROnPlateau(
+                    factor=0.5, patience=5, min_lr=1e-6, monitor="val_loss"
+                ),
+            ]
 
-        print(f"\nTest Results:")
-        print(f"  Signal Accuracy: {test_results['signal_accuracy']:.4f}")
-        print(f"  Price MAE: {test_results['price_target_mae']:.4f}%")
+            # Train model
+            # When using focal loss, don't use sample weights (focal loss handles imbalance)
+            # Otherwise, use sample weights for class balancing
+            fit_kwargs = {
+                "x": X_train,
+                "y": [y_signal_train, y_price_train],
+                "validation_data": (X_val, [y_signal_val, y_price_val]),
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "callbacks": callbacks,
+                "verbose": 1,
+            }
 
-        # Save training config for inference
-        config_path = model_path.replace(".weights.h5", "_config.json")
-        config = {
-            "feature_columns": self.feature_columns,
-            "feature_mean": self.feature_mean.tolist(),
-            "feature_std": self.feature_std.tolist(),
-            "sequence_length": self.sequence_length,
-            "input_dim": input_dim,
-        }
-        with open(config_path, "w") as f:
-            json.dump(config, f)
-        print(f"Saved model config to {config_path}")
+            if not use_focal_loss:
+                # Only use sample weights with standard cross-entropy
+                fit_kwargs["sample_weight"] = [sw_train, np.ones_like(sw_train)]
+
+            history = self.model.model.fit(**fit_kwargs)
+
+            # Evaluate on test set
+            test_results = self.model.model.evaluate(
+                X_test,
+                [y_signal_test, y_price_test],
+                verbose=0,
+                return_dict=True,
+            )
+
+            print(f"\nTest Results:")
+            print(f"  Signal Accuracy: {test_results['signal_accuracy']:.4f}")
+            print(f"  Price MAE: {test_results['price_target_mae']:.4f}%")
+
+            # Save training config for inference
+            config_path = model_path.replace(".weights.h5", "_config.json")
+            config = {
+                "feature_columns": self.feature_columns,
+                "feature_mean": self.feature_mean.tolist(),
+                "feature_std": self.feature_std.tolist(),
+                "sequence_length": self.sequence_length,
+                "input_dim": input_dim,
+            }
+            with open(config_path, "w") as f:
+                json.dump(config, f)
+            print(f"Saved model config to {config_path}")
+
+            return history, test_results, config_path
+
+        # Run training with or without MLflow tracking
+        if track_with_mlflow:
+            run_name = f"train-{'-'.join(tickers[:3])}"
+            if len(tickers) > 3:
+                run_name += f"-+{len(tickers)-3}"
+
+            with training_run(run_name=run_name, tags={"tickers": ",".join(tickers)}):
+                # Log hyperparameters
+                log_hyperparameters({
+                    "sequence_length": self.sequence_length,
+                    "train_ratio": self.train_ratio,
+                    "val_ratio": self.val_ratio,
+                    "prediction_horizon": self.prediction_horizon,
+                    "buy_threshold": self.buy_threshold,
+                    "sell_threshold": self.sell_threshold,
+                    "use_adaptive_thresholds": self.use_adaptive_thresholds,
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "use_focal_loss": use_focal_loss,
+                    "num_tickers": len(tickers),
+                    "train_samples": len(X_train),
+                    "val_samples": len(X_val),
+                    "test_samples": len(X_test),
+                    "input_dim": input_dim,
+                })
+
+                history, test_results, config_path = _do_training()
+
+                # Log training history per epoch
+                log_training_history(history.history)
+
+                # Log final test metrics
+                log_metrics({
+                    "test_loss": test_results["loss"],
+                    "test_signal_accuracy": test_results["signal_accuracy"],
+                    "test_price_mae": test_results["price_target_mae"],
+                })
+
+                # Log model artifacts
+                log_model_artifact(model_path, artifact_path="model")
+                log_model_artifact(config_path, artifact_path="model")
+        else:
+            history, test_results, _ = _do_training()
 
         return {
             "history": history.history,

@@ -38,14 +38,47 @@ finance/
 # Install dependencies
 uv sync
 
+# Install with dev dependencies
+uv sync --all-extras
+
 # Run the application
 uv run python main.py
 
 # Add a new dependency
 uv add <package>
+
+# Run tests
+uv run pytest
+
+# Run tests with coverage
+uv run pytest --cov=. --cov-report=html
+
+# Lint with ruff
+uv run ruff check .
+
+# Format with ruff
+uv run ruff format .
+
+# Type check with mypy
+uv run mypy .
+
+# Start MLflow tracking server (Docker)
+docker-compose up -d
+
+# View MLflow UI
+# Open http://localhost:5000 in browser
 ```
 
 ## Dependencies
 
 - **tensorflow**: Machine learning framework
 - **yfinance**: Yahoo Finance market data downloader
+- **mlflow**: Experiment tracking and model registry
+
+### Dev Dependencies
+
+- **pytest**: Testing framework
+- **pytest-cov**: Code coverage
+- **ruff**: Linting and formatting
+- **mypy**: Type checking
+- **pandas-stubs**: Type stubs for pandas

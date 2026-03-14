@@ -6,6 +6,8 @@ import numpy as np
 from typing import Optional
 import os
 
+from models.losses import sparse_focal_loss
+
 
 class SignalModel:
     """
@@ -22,6 +24,9 @@ class SignalModel:
         sequence_length: int = 20,
         hidden_units: list[int] = [128, 64, 32],
         dropout_rate: float = 0.1,
+        use_focal_loss: bool = True,
+        focal_gamma: float = 2.0,
+        focal_alpha: float = 0.25,
     ):
         """
         Initialize the model architecture.
@@ -30,11 +35,18 @@ class SignalModel:
             input_dim: Number of input features
             sequence_length: Number of time steps to look back
             hidden_units: List of hidden layer sizes
+            dropout_rate: Dropout rate for regularization
+            use_focal_loss: If True, use focal loss instead of cross-entropy
+            focal_gamma: Focal loss focusing parameter
+            focal_alpha: Focal loss alpha parameter
         """
         self.input_dim = input_dim
         self.sequence_length = sequence_length
         self.hidden_units = hidden_units
         self.dropout_rate = dropout_rate
+        self.use_focal_loss = use_focal_loss
+        self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
         self.model: Optional[keras.Model] = None
         self._build_model()
 
@@ -65,12 +77,18 @@ class SignalModel:
             inputs=inputs, outputs=[signal_output, price_output], name="signal_model"
         )
 
+        # Choose loss function for signal classification
+        if self.use_focal_loss:
+            signal_loss = sparse_focal_loss(gamma=self.focal_gamma, alpha=self.focal_alpha)
+        else:
+            signal_loss = "sparse_categorical_crossentropy"
+
         # Compile with appropriate losses
         # Focus more on signal classification (weight 1.0) vs price (weight 0.1)
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=0.001),
             loss={
-                "signal": "sparse_categorical_crossentropy",
+                "signal": signal_loss,
                 "price_target": "mse",
             },
             loss_weights={"signal": 1.0, "price_target": 0.1},
