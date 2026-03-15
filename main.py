@@ -329,6 +329,8 @@ def cmd_portfolio(args):
         use_kelly=args.kelly,
         kelly_max=args.kelly_max,
         adx_filter=getattr(args, "adx_filter", 0.0),
+        allow_short=getattr(args, "short", False),
+        reversal_exit=getattr(args, "reversal_exit", False),
     )
     result = backtester.run(
         tickers=args.tickers,
@@ -676,7 +678,9 @@ Examples:
     portfolio_parser.add_argument("--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)")
     portfolio_parser.add_argument("--kelly", action="store_true", help="Use Kelly criterion to size each trade by model confidence")
     portfolio_parser.add_argument("--kelly-max", type=float, default=3.0, dest="kelly_max", help="Max leverage Kelly can assign per trade (default: 3.0)")
-    portfolio_parser.add_argument("--adx-filter", type=float, default=0.0, dest="adx_filter", help="Minimum ADX(14) to allow a trade — skips BUY signals in low-trend/ranging markets (default: 0 = disabled)")
+    portfolio_parser.add_argument("--adx-filter", type=float, default=0.0, dest="adx_filter", help="Minimum ADX(14) to allow a trade — skips signals in low-trend/ranging markets (default: 0 = disabled)")
+    portfolio_parser.add_argument("--short", action="store_true", help="Also open short positions on SELL signals (default: BUY only)")
+    portfolio_parser.add_argument("--reversal-exit", action="store_true", dest="reversal_exit", help="Close a position early when the model signals the opposite direction")
     portfolio_parser.set_defaults(func=cmd_portfolio)
 
     # history command

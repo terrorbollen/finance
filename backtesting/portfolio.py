@@ -28,9 +28,11 @@ class PortfolioTrade:
     open_date: date
     close_date: date          # The prediction_date that closes this trade
     entry_value: float        # Capital committed at open
+    is_short: bool = False               # True for short (SELL signal) trades
     effective_leverage: float = 1.0      # Kelly or fixed leverage applied
-    actual_return: float | None = None   # Decimal (e.g. 0.05 = +5%)
+    actual_return: float | None = None   # Decimal price change (e.g. 0.05 = +5%)
     commission_paid: float = 0.0
+    early_exit: bool = False             # True if closed before horizon elapsed
 
     @property
     def is_complete(self) -> bool:
@@ -38,9 +40,11 @@ class PortfolioTrade:
 
     @property
     def pnl(self) -> float | None:
+        """Net P&L after commission. actual_return is raw price change; shorts invert it."""
         if self.actual_return is None:
             return None
-        return self.entry_value * self.actual_return - self.commission_paid
+        direction = -1.0 if self.is_short else 1.0
+        return self.entry_value * self.actual_return * direction * self.effective_leverage - self.commission_paid
 
     @property
     def is_winner(self) -> bool | None:
@@ -138,6 +142,14 @@ class PortfolioResult:
             f"  Max Drawdown  : {self.max_drawdown:.1f}%",
             f"  Total Trades  : {self.trade_count}",
             f"  Win Rate      : {self.win_rate * 100:.1f}%",
+        ]
+        longs = [t for t in self.completed_trades if not t.is_short]
+        shorts = [t for t in self.completed_trades if t.is_short]
+        early = [t for t in self.completed_trades if t.early_exit]
+        if shorts or early:
+            lines.append(f"  Long / Short  : {len(longs)} / {len(shorts)}"
+                         + (f"  |  Early exits: {len(early)}" if early else ""))
+        lines += [
             "",
             f"  {'Ticker':<14} {'Trades':>7} {'Win Rate':>9} {'Net P&L':>10}",
             "  " + "-" * 44,
@@ -174,6 +186,8 @@ class PortfolioBacktester:
         kelly_max: float = 3.0,
         stop_loss_pct: float = 0.05,
         adx_filter: float = 0.0,
+        allow_short: bool = False,
+        reversal_exit: bool = False,
     ):
         self.model_name = model_name
         self.commission_pct = commission_pct
@@ -185,6 +199,8 @@ class PortfolioBacktester:
         self.kelly_max = kelly_max          # cap: e.g. 3.0 = max 3x per trade
         self.stop_loss_pct = stop_loss_pct  # fallback stop for Kelly calc
         self.adx_filter = adx_filter        # min ADX to allow a trade (0 = disabled)
+        self.allow_short = allow_short      # act on SELL signals with short positions
+        self.reversal_exit = reversal_exit  # exit early when model flips direction
         self._cal_buckets: list[dict] = self._load_calibration_buckets(model_name)
 
     def run(
@@ -198,10 +214,12 @@ class PortfolioBacktester:
         max_pos = self.max_positions or len(tickers)
         alloc_value = self.initial_capital / max_pos
 
-        # --- Step 1: collect per-ticker predictions ---
+        # --- Step 1: collect per-ticker predictions and closing prices ---
         print(f"Collecting predictions for {len(tickers)} tickers (horizon={horizon}d)...")
         # pred_by_ticker[ticker][prediction_date] = HorizonPrediction
         pred_by_ticker: dict[str, dict[date, HorizonPrediction]] = {}
+        # prices_by_ticker[ticker][date] = closing price (for early-exit P&L)
+        prices_by_ticker: dict[str, dict[date, float]] = {}
 
         for ticker in tickers:
             bt = Backtester(model_path=paths["weights"], strict_holdout=self.strict_holdout)
@@ -212,14 +230,18 @@ class PortfolioBacktester:
                 horizons=[horizon],
             )
             ticker_preds: dict[date, HorizonPrediction] = {}
+            ticker_prices: dict[date, float] = {}
             for daily in result.daily_predictions:
+                ticker_prices[daily.date] = daily.current_price
                 pred = daily.predictions.get(horizon)
                 if pred is not None:
                     ticker_preds[pred.prediction_date] = pred
             pred_by_ticker[ticker] = ticker_preds
+            prices_by_ticker[ticker] = ticker_prices
             n = len(ticker_preds)
             buys = sum(1 for p in ticker_preds.values() if p.predicted_signal == Signal.BUY)
-            print(f"  {ticker:<16} {n} predictions  ({buys} BUY)")
+            sells = sum(1 for p in ticker_preds.values() if p.predicted_signal == Signal.SELL)
+            print(f"  {ticker:<16} {n} predictions  ({buys} BUY, {sells} SELL)")
 
         # --- Step 2: build unified sorted trading day timeline ---
         all_dates = sorted({d for preds in pred_by_ticker.values() for d in preds})
@@ -234,66 +256,103 @@ class PortfolioBacktester:
         equity_curve: list[tuple[date, float]] = [(all_dates[0], capital)]
 
         for i, current_date in enumerate(all_dates):
-            # Close positions whose horizon has elapsed
+            # --- Early exit: close if model signals the opposite direction ---
+            if self.reversal_exit:
+                reversal_close = []
+                for tkr, (_, _, _, trade) in open_pos.items():
+                    pred = pred_by_ticker[tkr].get(current_date)
+                    if pred is None:
+                        continue
+                    flip = (
+                        (not trade.is_short and pred.predicted_signal == Signal.SELL) or
+                        (trade.is_short and pred.predicted_signal == Signal.BUY)
+                    )
+                    if flip:
+                        reversal_close.append(tkr)
+                for tkr in reversal_close:
+                    _, _, entry_val, trade = open_pos.pop(tkr)
+                    open_price = prices_by_ticker[tkr].get(trade.open_date)
+                    exit_price = prices_by_ticker[tkr].get(current_date)
+                    if open_price and exit_price and open_price > 0:
+                        price_return = exit_price / open_price - 1.0
+                    else:
+                        price_return = 0.0
+                    trade.actual_return = price_return
+                    trade.early_exit = True
+                    eff_lev = trade.effective_leverage
+                    direction = -1.0 if trade.is_short else 1.0
+                    commission = entry_val * self.commission_pct * 2 * eff_lev
+                    trade.commission_paid = commission
+                    capital += entry_val + entry_val * price_return * direction * eff_lev - commission
+                    completed.append(trade)
+                    equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
+
+            # --- Close positions whose horizon has elapsed ---
             to_close = [tkr for tkr, (_, close_idx, _, _) in open_pos.items() if close_idx <= i]
             for tkr in to_close:
                 _, _, entry_val, trade = open_pos.pop(tkr)
                 pred = pred_by_ticker[tkr].get(trade.open_date)
-                actual_return = (pred.actual_price_change / 100.0) if (
+                price_return = (pred.actual_price_change / 100.0) if (
                     pred is not None and pred.actual_price_change is not None
                 ) else None
-                trade.actual_return = actual_return
+                trade.actual_return = price_return
                 eff_lev = trade.effective_leverage
+                direction = -1.0 if trade.is_short else 1.0
                 commission = entry_val * self.commission_pct * 2 * eff_lev
                 trade.commission_paid = commission
-                if actual_return is not None:
-                    capital += entry_val + entry_val * actual_return * eff_lev - commission
+                if price_return is not None:
+                    capital += entry_val + entry_val * price_return * direction * eff_lev - commission
                 else:
                     capital += entry_val  # return capital as-is for incomplete predictions
                 completed.append(trade)
                 equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
 
-            # Open new positions on BUY signals
-            for ticker in tickers:
-                if ticker in open_pos:
-                    continue  # already holding
-                if len(open_pos) >= max_pos:
-                    break
-                pred = pred_by_ticker[ticker].get(current_date)
-                if pred is None or pred.predicted_signal != Signal.BUY:
-                    continue
-                if self.adx_filter > 0 and (pred.adx is None or pred.adx < self.adx_filter):
-                    continue  # regime filter: skip low-trend environments
-                if capital < alloc_value:
-                    continue  # not enough cash
+            # --- Open new positions on BUY (and optionally SELL) signals ---
+            signals_to_check = [Signal.BUY]
+            if self.allow_short:
+                signals_to_check.append(Signal.SELL)
 
-                # Position sizing
-                if self.use_kelly:
-                    # Kelly fraction = % of total capital to deploy on this trade
-                    cal_conf = self._calibrate(pred.confidence)
-                    kelly_f = self._kelly_fraction(cal_conf, pred.predicted_price_change)
-                    if kelly_f <= 0:
-                        continue  # Kelly says no edge — skip
-                    position_capital = min(capital, self.initial_capital * kelly_f)
-                    eff_lev = 1.0  # no extra leverage on top of Kelly sizing
-                else:
-                    position_capital = alloc_value
-                    eff_lev = self.leverage
+            for signal_dir in signals_to_check:
+                for ticker in tickers:
+                    if ticker in open_pos:
+                        continue  # already holding
+                    if len(open_pos) >= max_pos:
+                        break
+                    pred = pred_by_ticker[ticker].get(current_date)
+                    if pred is None or pred.predicted_signal != signal_dir:
+                        continue
+                    if self.adx_filter > 0 and (pred.adx is None or pred.adx < self.adx_filter):
+                        continue  # regime filter: skip low-trend environments
+                    if capital < alloc_value:
+                        continue  # not enough cash
 
-                if capital < position_capital:
-                    continue
-                capital -= position_capital
-                close_idx = min(i + horizon, len(all_dates) - 1)
-                close_date = all_dates[close_idx]
-                trade = PortfolioTrade(
-                    ticker=ticker,
-                    open_date=current_date,
-                    close_date=close_date,
-                    entry_value=position_capital,
-                    effective_leverage=eff_lev,
-                )
-                open_pos[ticker] = (i, close_idx, position_capital, trade)
-                equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
+                    # Position sizing
+                    if self.use_kelly:
+                        cal_conf = self._calibrate(pred.confidence)
+                        kelly_f = self._kelly_fraction(cal_conf, pred.predicted_price_change)
+                        if kelly_f <= 0:
+                            continue
+                        position_capital = min(capital, self.initial_capital * kelly_f)
+                        eff_lev = 1.0
+                    else:
+                        position_capital = alloc_value
+                        eff_lev = self.leverage
+
+                    if capital < position_capital:
+                        continue
+                    capital -= position_capital
+                    close_idx = min(i + horizon, len(all_dates) - 1)
+                    close_date = all_dates[close_idx]
+                    trade = PortfolioTrade(
+                        ticker=ticker,
+                        open_date=current_date,
+                        close_date=close_date,
+                        entry_value=position_capital,
+                        is_short=(signal_dir == Signal.SELL),
+                        effective_leverage=eff_lev,
+                    )
+                    open_pos[ticker] = (i, close_idx, position_capital, trade)
+                    equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
 
         # Mark any still-open trades as incomplete and return their capital
         remaining: list[PortfolioTrade] = []
