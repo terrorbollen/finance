@@ -81,24 +81,13 @@ This JSON is the contract between training and inference. It is written by `Mode
 | `feature_columns` | `list[str]` | Ordered list of feature column names the model was trained on |
 | `feature_mean` | `list[float]` | Per-feature mean computed on the **training split only** |
 | `feature_std` | `list[float]` | Per-feature std computed on the **training split only** |
-| `sequence_length` | `int` | LSTM lookback window in bars (20 for `1d`, 140 for `1h`) |
+| `sequence_length` | `int` | LSTM lookback window in bars (default 20) |
 | `input_dim` | `int` | Number of features (= `len(feature_columns)`) |
-| `interval` | `str` | Data interval the model was trained on (`"1d"` or `"1h"`) |
+| `interval` | `str` | Data interval the model was trained on (always `"1d"`) |
 | `training_fetch_date` | `str` (ISO date) | Date training data was fetched |
 | `holdout_start_date` | `str` (ISO date) | Earliest date the backtester is allowed to evaluate |
 
 **Adding a new feature requires retraining** — the config will be out of date and `input_dim` will not match the model weights.
-
-### Multi-interval models
-
-Each interval trains a completely independent model with its own checkpoint and config:
-
-| Interval | Model weights | Config | Calibration | Sequence length | Prediction horizon | Data period |
-|---|---|---|---|---|---|---|
-| `1d` (default) | `signal_model.weights.h5` | `signal_model_config.json` | `calibration.json` | 20 bars | 5 bars | 5 years |
-| `1h` | `signal_model_1h.weights.h5` | `signal_model_1h_config.json` | `calibration_1h.json` | 140 bars | 35 bars | 2 years |
-
-Use `--interval 1h` with `train`, `backtest`, and `calibrate` to operate on the hourly model. The default is always `1d`.
 
 ### 4. Sequence Creation — `models/signal_model.py:create_sequences`
 

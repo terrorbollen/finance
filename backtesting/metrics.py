@@ -47,7 +47,6 @@ class MetricsCalculator:
         commission_pct: float = 0.001,
         slippage_factor: float = 0.0,
         leverage: float = 1.0,
-        interval: str = "1d",
     ):
         """
         Initialize metrics calculator.
@@ -68,7 +67,6 @@ class MetricsCalculator:
         self.commission_pct = commission_pct
         self.slippage_factor = slippage_factor
         self.leverage = leverage
-        self.interval = interval
 
     def calculate_horizon_metrics(
         self,
@@ -329,7 +327,7 @@ class MetricsCalculator:
         mean_r = float(np.mean(arr))
         std_r = float(np.std(arr, ddof=1))
 
-        bars_per_year = 252 * 7 if self.interval == "1h" else 252
+        bars_per_year = 252
         ann_factor = np.sqrt(bars_per_year)
         sharpe = float((mean_r / std_r) * ann_factor) if std_r > 1e-8 else 0.0
 

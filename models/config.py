@@ -12,10 +12,12 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, field_validator, model_validator
+
+#: Historical data fetch period for training and backtesting.
+FETCH_PERIOD = "10y"
 
 
 class ModelConfig(BaseModel):
@@ -26,8 +28,7 @@ class ModelConfig(BaseModel):
     feature_std: list[float]
     sequence_length: int
     input_dim: int
-    # interval was added after initial release; default "1d" for backward compat
-    interval: Literal["1d", "1h"] = "1d"
+    interval: str = "1d"
     training_fetch_date: date
     holdout_start_date: date
     buy_threshold: float = 0.015
@@ -84,12 +85,11 @@ class ModelConfig(BaseModel):
         Path(path).write_text(self.model_dump_json(indent=2))
 
     @staticmethod
-    def checkpoint_paths(interval: str) -> dict[str, str]:
-        """Return the canonical checkpoint file paths for a given interval."""
-        suffix = "" if interval == "1d" else f"_{interval}"
+    def checkpoint_paths() -> dict[str, str]:
+        """Return the canonical checkpoint file paths."""
         return {
-            "weights": f"checkpoints/signal_model{suffix}.weights.h5",
-            "config": f"checkpoints/signal_model{suffix}_config.json",
-            "calibration": f"checkpoints/calibration{suffix}.json",
-            "calibration_directional": f"checkpoints/calibration{suffix}_directional.json",
+            "weights": "checkpoints/signal_model.weights.h5",
+            "config": "checkpoints/signal_model_config.json",
+            "calibration": "checkpoints/calibration.json",
+            "calibration_directional": "checkpoints/calibration_directional.json",
         }

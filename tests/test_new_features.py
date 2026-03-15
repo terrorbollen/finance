@@ -161,46 +161,13 @@ class TestLeverage:
 # ---------------------------------------------------------------------------
 
 class TestAnnualizationFactor:
-    def _sharpe(self, interval: str, returns: list[float]) -> float:
-        calc = _calc(interval=interval)
-        sharpe, _, _, _ = calc._calculate_risk_metrics(returns)
-        return sharpe
-
-    def test_1d_uses_252_bars(self):
+    def test_uses_252_bars(self):
         returns = [1.0, 2.0, -1.0, 3.0, 0.5] * 10
-        sharpe_1d = self._sharpe("1d", returns)
+        calc = _calc()
+        sharpe, _, _, _ = calc._calculate_risk_metrics(returns)
         arr = np.array(returns)
         expected = float(np.mean(arr) / np.std(arr, ddof=1) * math.sqrt(252))
-        assert sharpe_1d == pytest.approx(expected, rel=1e-6)
-
-    def test_1h_uses_252x7_bars(self):
-        returns = [1.0, 2.0, -1.0, 3.0, 0.5] * 10
-        sharpe_1h = self._sharpe("1h", returns)
-        arr = np.array(returns)
-        expected = float(np.mean(arr) / np.std(arr, ddof=1) * math.sqrt(252 * 7))
-        assert sharpe_1h == pytest.approx(expected, rel=1e-6)
-
-    def test_1h_sharpe_higher_than_1d_same_returns(self):
-        # Higher annualization factor → higher Sharpe for positive-mean returns
-        returns = [1.0, 2.0, 1.5, 1.0, 2.0] * 5
-        sharpe_1d = self._sharpe("1d", returns)
-        sharpe_1h = self._sharpe("1h", returns)
-        assert sharpe_1h > sharpe_1d
-
-    def test_ratio_of_sharpes_equals_sqrt_7(self):
-        returns = [1.0, 2.0, -0.5, 1.5, 0.8] * 10
-        sharpe_1d = self._sharpe("1d", returns)
-        sharpe_1h = self._sharpe("1h", returns)
-        assert sharpe_1h / sharpe_1d == pytest.approx(math.sqrt(7), rel=1e-6)
-
-    def test_sortino_also_uses_correct_factor(self):
-        # Must include enough negative returns so downside_std > 0 in both cases
-        returns = [1.0, -1.0, 2.0, -2.0, 1.5, -0.5, 1.0, -1.0, 2.0, -1.5] * 5
-        calc_1d = _calc(interval="1d")
-        calc_1h = _calc(interval="1h")
-        _, sortino_1d, _, _ = calc_1d._calculate_risk_metrics(returns)
-        _, sortino_1h, _, _ = calc_1h._calculate_risk_metrics(returns)
-        assert sortino_1h / sortino_1d == pytest.approx(math.sqrt(7), rel=1e-6)
+        assert sharpe == pytest.approx(expected, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +259,6 @@ class TestFeatureMismatch:
 
     def _backtester(self, feature_columns: list[str]) -> Backtester:
         bt = Backtester.__new__(Backtester)
-        bt.interval = "1d"
         bt.model_path = "nonexistent.weights.h5"
         bt.sequence_length = 5
         bt.buy_threshold = 0.02
@@ -415,22 +381,14 @@ class TestEquityCurve:
 # ---------------------------------------------------------------------------
 
 class TestCheckpointPaths:
-    def test_1d_paths_have_no_suffix(self):
+    def test_expected_paths(self):
         from models.config import ModelConfig
-        paths = ModelConfig.checkpoint_paths("1d")
-        assert "signal_model.weights.h5" in paths["weights"]
-        assert "calibration.json" in paths["calibration"]
-        assert "_1d" not in paths["weights"]
-
-    def test_1h_paths_have_1h_suffix(self):
-        from models.config import ModelConfig
-        paths = ModelConfig.checkpoint_paths("1h")
-        assert "signal_model_1h.weights.h5" in paths["weights"]
-        assert "calibration_1h.json" in paths["calibration"]
-        assert "calibration_1h_directional.json" in paths["calibration_directional"]
+        paths = ModelConfig.checkpoint_paths()
+        assert paths["weights"] == "checkpoints/signal_model.weights.h5"
+        assert paths["calibration"] == "checkpoints/calibration.json"
 
     def test_all_keys_present(self):
         from models.config import ModelConfig
-        paths = ModelConfig.checkpoint_paths("1d")
+        paths = ModelConfig.checkpoint_paths()
         for key in ("weights", "config", "calibration", "calibration_directional"):
             assert key in paths

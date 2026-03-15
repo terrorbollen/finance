@@ -25,39 +25,30 @@ from models.signal_model import SignalModel, create_sequences
 class ModelTrainer:
     """Handles model training with time-series aware data splitting."""
 
-    # Bars per trading day and data fetch period per interval.
-    # Stockholm exchange trades ~7 hours/day on Yahoo Finance hourly data.
-    _INTERVAL_BARS_PER_DAY: dict[str, int] = {"1d": 1, "1h": 7}
-    _INTERVAL_PERIOD: dict[str, str] = {"1d": "5y", "1h": "2y"}
-
     def __init__(
         self,
-        sequence_length: int | None = None,
+        sequence_length: int = 20,
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
-        prediction_horizon: int | None = None,
+        prediction_horizon: int = 5,
         buy_threshold: float = 0.015,
         sell_threshold: float = -0.015,
         use_adaptive_thresholds: bool = True,
-        interval: str = "1d",
     ):
         """
         Initialize the trainer.
 
         Args:
-            sequence_length: LSTM lookback window (bars). Defaults to 20 days worth of bars.
+            sequence_length: LSTM lookback window in trading days (default 20).
             train_ratio: Proportion of data for training
             val_ratio: Proportion of data for validation (rest is test)
-            prediction_horizon: Bars ahead to predict. Defaults to 5 days worth of bars.
+            prediction_horizon: Trading days ahead to predict (default 5).
             buy_threshold: Min % gain to label as Buy
             sell_threshold: Max % loss to label as Sell
             use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
-            interval: Data interval — "1d" (daily) or "1h" (hourly)
         """
-        self.interval = interval
-        bars = self._INTERVAL_BARS_PER_DAY.get(interval, 1)
-        self.sequence_length = sequence_length if sequence_length is not None else 20 * bars
-        self.prediction_horizon = prediction_horizon if prediction_horizon is not None else 5 * bars
+        self.sequence_length = sequence_length
+        self.prediction_horizon = prediction_horizon
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.buy_threshold = buy_threshold
@@ -151,18 +142,16 @@ class ModelTrainer:
         Returns:
             Dictionary with training history and metrics
         """
-        # Resolve model path based on interval if not explicitly provided
-        suffix = "" if self.interval == "1d" else f"_{self.interval}"
+        # Resolve model path if not explicitly provided
         if model_path is None:
-            model_path = f"checkpoints/signal_model{suffix}.weights.h5"
+            model_path = ModelConfig.checkpoint_paths()["weights"]
 
         # Setup MLflow tracking if enabled
         if track_with_mlflow:
             setup_mlflow()
 
         # Fetch and combine data from all tickers
-        period = self._INTERVAL_PERIOD.get(self.interval, "5y")
-        fetcher = StockDataFetcher(period=period, interval=self.interval)
+        fetcher = StockDataFetcher(period=ModelConfig.FETCH_PERIOD)
         all_features, all_labels, all_prices, all_dates = [], [], [], []
 
         loaded_tickers: list[str] = []
@@ -343,7 +332,6 @@ class ModelTrainer:
                 feature_std=self.feature_std.tolist(),
                 sequence_length=self.sequence_length,
                 input_dim=input_dim,
-                interval=self.interval,
                 training_fetch_date=date.today(),
                 holdout_start_date=pd.Timestamp(latest_val_date).date(),
                 buy_threshold=self.buy_threshold,
@@ -355,6 +343,7 @@ class ModelTrainer:
             return history, test_results, config_path
 
         # Run training with or without MLflow tracking
+        run_id: str | None = None
         if track_with_mlflow:
             run_name = f"train-{'-'.join(tickers[:3])}"
             if len(tickers) > 3:
@@ -418,6 +407,22 @@ class ModelTrainer:
                 # Log model artifacts
                 log_model_artifact(model_path, artifact_path="model")
                 log_model_artifact(config_path, artifact_path="model")
+
+                # Register model in MLflow Model Registry for version tracking.
+                # Wrapped in try/except because older MLflow server versions may not
+                # support the registry API — training must not fail over this.
+                active = mlflow.active_run()
+                if active:
+                    run_id = active.info.run_id
+                    try:
+                        mlflow.register_model(
+                            model_uri=f"runs:/{run_id}/model",
+                            name="trading-signals",
+                            tags={"holdout_start_date": holdout_date_str},
+                        )
+                    except Exception as e:
+                        print(f"Warning: MLflow model registry unavailable ({e}). "
+                              "Run ID {run_id} still logged.")
         else:
             history, test_results, _ = _do_training()
 
@@ -427,4 +432,5 @@ class ModelTrainer:
             "test_signal_accuracy": test_results["signal_accuracy"],
             "test_price_mae": test_results["price_target_mae"],
             "loaded_tickers": loaded_tickers,
+            "mlflow_run_id": run_id,
         }

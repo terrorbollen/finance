@@ -111,6 +111,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | I8 | Print `holdout_start_date` prominently after training so users immediately see where the holdout boundary is before running a backtest | `main.py` | — | open |
 | I9 | Remove fallback normalization: if training stats are unavailable at inference/backtest time, fail loudly instead of falling back to current-window stats (current fallback introduces data leakage) | `backtesting/backtester.py`, `signals/generator.py` | — | open |
 | I10 | Backfill `holdout_start_date` in old model configs or add a CLI flag (`--holdout-start`) to pass it at backtest time so holdout enforcement works on pre-existing checkpoints | `main.py`, `backtesting/backtester.py` | — | open |
+| I11 | Log `leverage` to MLflow in backtest runs: `cmd_backtest` logs ticker/dates/commission but omits `leverage`, making it impossible to distinguish or compare leveraged runs in history | `main.py` | — | open |
 
 ---
 

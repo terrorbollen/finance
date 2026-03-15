@@ -9,10 +9,10 @@ This document describes how we validate the trading signal model, how to interpr
 Every evaluation follows this order — skipping steps leads to misleading numbers.
 
 ```bash
-# 1. Train on non-holdout data
+# 1. Train on non-holdout data (calibration runs automatically after training)
 uv run python main.py train
 
-# 2. Fit confidence calibrator on holdout data
+# 2. Re-fit calibrator manually if needed (e.g. after changing tickers)
 #    Also prints per-ticker accuracy, win rate, net return and Sharpe as it runs —
 #    this is usually enough for a health check after training.
 uv run python main.py calibrate
@@ -123,11 +123,13 @@ Horizon    Trades     Win Rate       Gross Ret    Net Ret      Sharpe   Max DD  
 
 Raw softmax probabilities are poorly calibrated (higher confidence ≠ higher accuracy). After training, always run `calibrate` to fit the isotonic regression calibrator.
 
-Calibration runs a full backtest per ticker internally, so it can be slow (roughly 10–20 minutes for 5 tickers on the 1h model). A compact metrics summary is printed per ticker as it completes — no need to run a separate `backtest` afterwards unless you want the full breakdown.
+Calibration runs a full backtest per ticker internally. A compact metrics summary is printed per ticker as it completes — no need to run a separate `backtest` afterwards unless you want the full breakdown.
 
-The calibrator is loaded automatically from `checkpoints/calibration.json` (1d) or `checkpoints/calibration_1h.json` (1h).
+The calibrator is loaded automatically from `checkpoints/calibration.json`.
 
-Recalibrate whenever you retrain the model.
+Recalibrate whenever you retrain the model. Calibration runs automatically at the end of `train` unless `--no-calibrate` is passed.
+
+**Horizon must match training prediction_horizon.** The calibration `--horizon` parameter is the number of *bars* ahead to evaluate. The default is 5 (5 trading days), matching the model's default `prediction_horizon`. Only override this if you changed `prediction_horizon` during training.
 
 ---
 

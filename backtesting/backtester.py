@@ -15,7 +15,7 @@ from backtesting.results import (
 )
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
-from models.config import ModelConfig
+from models.config import FETCH_PERIOD, ModelConfig
 from models.signal_model import SignalModel
 
 
@@ -27,8 +27,6 @@ class Backtester:
     available up to that point.
     """
 
-    _INTERVAL_PERIOD: dict[str, str] = {"1d": "5y", "1h": "2y"}
-
     def __init__(
         self,
         model_path: str | None = None,
@@ -38,14 +36,13 @@ class Backtester:
         commission_pct: float = 0.001,
         strict_holdout: bool = True,
         slippage_factor: float = 0.1,
-        interval: str = "1d",
         leverage: float = 1.0,
     ):
         """
         Initialize the backtester.
 
         Args:
-            model_path: Path to trained model weights. Defaults to interval-specific checkpoint.
+            model_path: Path to trained model weights. Defaults to checkpoint.
             sequence_length: Sequence length used during training
             buy_threshold: Price change threshold for BUY signal
             sell_threshold: Price change threshold for SELL signal
@@ -56,11 +53,9 @@ class Backtester:
             slippage_factor: Scaling constant for volume-based slippage model.
                              slippage_pct = slippage_factor / sqrt(relative_volume),
                              capped at 0.5% per trade. Set to 0 to disable slippage.
-            interval: Data interval used during training — "1d" or "1h".
             leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
         """
-        self.interval = interval
-        self.model_path = model_path or ModelConfig.checkpoint_paths(interval)["weights"]
+        self.model_path = model_path or ModelConfig.checkpoint_paths()["weights"]
         self.sequence_length = sequence_length
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -80,7 +75,6 @@ class Backtester:
             commission_pct=commission_pct,
             slippage_factor=slippage_factor,
             leverage=leverage,
-            interval=interval,
         )
 
         self._load_config()
@@ -134,8 +128,7 @@ class Backtester:
             BacktestResult with all predictions and metrics
         """
         # Fetch full history
-        period = self._INTERVAL_PERIOD.get(self.interval, "5y")
-        fetcher = StockDataFetcher(period=period, interval=self.interval)
+        fetcher = StockDataFetcher(period=FETCH_PERIOD)
         df_raw = fetcher.fetch(ticker)
 
         # Add features (including cross-asset reference data)
@@ -229,7 +222,7 @@ class Backtester:
             vol_series = df["volume"]
             rolling_avg = vol_series.rolling(window=20, min_periods=1).mean()
             with np.errstate(divide="ignore", invalid="ignore"):
-                rel_vols = np.where(rolling_avg > 0, vol_series / rolling_avg, None)
+                rel_vols = np.where(rolling_avg > 0, vol_series / rolling_avg, np.nan)
 
         # Process each day using pre-computed predictions
         daily_predictions = []
@@ -242,7 +235,8 @@ class Backtester:
             predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
             confidence = float(signal_probs_all[i][direction_idx])
             predicted_change = float(price_targets_all[i])
-            relative_volume = float(rel_vols[idx]) if rel_vols is not None else None
+            rv = float(rel_vols[idx]) if rel_vols is not None else float("nan")
+            relative_volume = None if (rel_vols is None or np.isnan(rv)) else rv
 
             daily_pred = DailyPrediction(date=pred_date, current_price=current_price)
             for horizon in horizons:
@@ -306,9 +300,7 @@ class Backtester:
         """
         try:
             if omxs30_df is None:
-                period = self._INTERVAL_PERIOD.get(self.interval, "5y")
-                fetcher = StockDataFetcher(period=period, interval=self.interval)
-                omxs30_df = fetcher.fetch("^OMX")
+                omxs30_df = StockDataFetcher(period=FETCH_PERIOD).fetch("^OMX")
             bench_dates = pd.DatetimeIndex(omxs30_df.index).date
             mask = (bench_dates >= start_date) & (bench_dates <= end_date)
             df_period = omxs30_df[mask]

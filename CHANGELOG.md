@@ -4,6 +4,58 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-15 (session 4)
+
+### Removed all 1h / multi-interval code
+
+Removed the `--interval` flag from `train`, `backtest`, and `calibrate` CLI commands. Removed `interval` parameter from `ModelTrainer`, `Backtester`, `MetricsCalculator`, and `SignalGenerator`. Removed `ModelConfig.BARS_PER_DAY` and `ModelConfig.FETCH_PERIOD` dicts — replaced with the module-level constant `FETCH_PERIOD = "10y"`. `ModelConfig.checkpoint_paths()` no longer takes an interval argument. The `bars_per_year = 252 * 7` branch in Sharpe/Sortino calculation is removed. Obsolete tests for 1h annualization factor and checkpoint suffixes updated. Motivation: the 1h model was retired (only 4 months holdout, overfits fast on 2-year data cap, calibration collapses in the 40–70% confidence range). Removing the branching code simplifies all call sites and eliminates an entire class of configuration errors.
+
+### Removed 1h model checkpoints
+
+Deleted `signal_model_1h.weights.h5`, `signal_model_1h_config.json`, and `calibration_1h.json`. The 1h model was retired because: yfinance caps hourly data at 2 years giving only ~4 months of holdout — too short to trust; training overfit early (stopped at epoch 15/50 with a large train/val gap); and calibration collapsed the 40–70% confidence range to a single value (57.3%), indicating the model wasn't differentiating within its most common output range. The `--interval` CLI flag is retained so a 1h model can be retrained if a better data source becomes available.
+
+### Fixed MLflow calibration logging — separate run instead of re-opening completed run
+
+`_run_calibration()` in `main.py` previously re-opened the training run via `mlflow.start_run(run_id=existing_id)` to log calibration metrics. This triggered a `POST /api/2.0/mlflow/logged-models/search` call that returned 404 on MLflow 2.10.0, crashing the auto-calibration step after training. Replaced with a new dedicated run tagged `run_type=calibration` and `training_run_id=<parent>`. The two runs are now linked via tag rather than run re-entry, which is the standard MLflow pattern for post-training steps.
+
+### Fixed Pydantic class constants — BARS_PER_DAY and FETCH_PERIOD moved to module level
+
+Pydantic's `BaseModel` intercepts class-level dict assignments and treats them as model fields, causing `AttributeError: BARS_PER_DAY` at import time. Moved both constants to module level in `models/config.py` and re-attached them to `ModelConfig` after class definition so `ModelConfig.BARS_PER_DAY` / `ModelConfig.FETCH_PERIOD` continue to work at all call sites.
+
+---
+
+## 2026-03-15 (session 3)
+
+### Extended 1d training data from 5y to 10y
+
+`ModelConfig.FETCH_PERIOD` for `1d` changed from `"5y"` to `"10y"`. With 10 years of daily data the test holdout covers ~18 months instead of ~6 months, giving meaningfully more trustworthy validation metrics. The 1h interval remains at `"2y"` — yfinance hard-limits hourly data to 2 years.
+
+### Interval constants moved to ModelConfig (single source of truth)
+
+`BARS_PER_DAY` and `FETCH_PERIOD` are now class-level constants on `ModelConfig` in `models/config.py`. Previously these dicts were duplicated across `ModelTrainer`, `Backtester`, and inline in `main.py`. Any future period or bars-per-day change now requires editing one place only.
+
+### Fixed auto-calibrate horizon in `train` command
+
+The auto-calibration that runs after `train` was hardcoded to `horizon=5` regardless of interval, causing the 1h model to be calibrated against 5-hour outcomes instead of 35-hour (5 trading days) outcomes. Now uses `5 * ModelConfig.BARS_PER_DAY[interval]` so 1d → 5 and 1h → 35.
+
+---
+
+## 2026-03-15 (session 2)
+
+### Fixed calibration hang — naive isotonic regression replaced with sklearn
+
+`ConfidenceCalibrator._isotonic_regression()` used a naive pair-pooling PAV algorithm with a `while True` loop. Pooling a pair can create new violations with neighboring elements, requiring repeated passes that could take very long before floating-point values converge. Replaced with `sklearn.isotonic.IsotonicRegression` which implements the correct O(n) PAV algorithm and is guaranteed to terminate in a single pass. This was the root cause of `calibrate --interval 1h` hanging indefinitely. Full 5-ticker 1h calibration now completes in ~6 seconds.
+
+### Removed redundant OMXS30 benchmark fetch
+
+`Backtester.run()` was fetching `^OMX` twice per ticker: once inside `fetch_cross_asset_data()` (for cross-asset features) and again in `_compute_benchmark_return()` at the end of `run()`. The second fetch is now replaced by passing the already-fetched series from `ref_data`. `_compute_benchmark_return()` falls back to a live fetch only when no cached data is supplied. This halves the yfinance request count per ticker.
+
+### Added 30-second timeout to all yfinance requests
+
+Both `.history()` calls in `StockDataFetcher` now pass `timeout=30`. Previously, a slow or non-responding Yahoo Finance would cause any backtest or calibration run to hang indefinitely with no error. Now a `Timeout` exception is raised after 30 seconds, giving a clear failure message instead of a silent freeze.
+
+---
+
 ## 2026-03-15
 
 ### Portfolio-level risk limits in SignalGenerator (R6)

@@ -6,7 +6,7 @@ import sys
 from datetime import UTC, datetime
 
 from backtesting import Backtester
-from backtesting.results import Signal
+from backtesting.results import HorizonMetrics, Signal
 from data.fetcher import StockDataFetcher
 from models.mlflow_tracking import (
     get_recent_runs,
@@ -109,7 +109,7 @@ def cmd_train(args):
             print("\n" + results.summary())
         else:
             # Standard training
-            trainer = ModelTrainer(interval=args.interval)
+            trainer = ModelTrainer()
             results = trainer.train(
                 tickers=tickers,
                 epochs=args.epochs,
@@ -126,8 +126,8 @@ def cmd_train(args):
                 _run_calibration(
                     tickers=results["loaded_tickers"],
                     horizon=5,
-                    output_path=ModelConfig.checkpoint_paths(args.interval)["calibration"],
-                    interval=args.interval,
+                    output_path=ModelConfig.checkpoint_paths()["calibration"],
+                    mlflow_run_id=results.get("mlflow_run_id"),
                 )
     except Exception as e:
         print(f"Training error: {e}")
@@ -155,7 +155,6 @@ def _run_leverage_comparison(args, start_date, end_date, horizons):
         backtester = Backtester(
             commission_pct=args.commission,
             strict_holdout=not args.no_strict_holdout,
-            interval=args.interval,
             leverage=lev,
         )
         result = backtester.run(
@@ -210,7 +209,6 @@ def cmd_backtest(args):
     backtester = Backtester(
         commission_pct=args.commission,
         strict_holdout=not args.no_strict_holdout,
-        interval=args.interval,
         leverage=args.leverage,
     )
     try:
@@ -345,16 +343,21 @@ def _run_calibration(
     tickers: list[str],
     horizon: int,
     output_path: str,
-    interval: str = "1d",
     num_buckets: int = 10,
+    mlflow_run_id: str | None = None,
 ) -> bool:
     """
     Run backtests on tickers and fit a confidence calibrator.
+
+    If mlflow_run_id is provided, calibration metrics are logged as a separate
+    MLflow run tagged with the training run_id. This avoids re-opening a
+    completed run (which is brittle) while still linking the two in the UI.
 
     Returns True if calibration succeeded, False otherwise.
     """
     import time
 
+    import mlflow
     import numpy as np
 
     print(f"\nCalibrating confidence using {len(tickers)} tickers (horizon={horizon}d)...")
@@ -362,9 +365,9 @@ def _run_calibration(
 
     all_confidences = []
     all_correct = []
-    backtest_results = []
+    ticker_metrics: dict[str, HorizonMetrics] = {}
 
-    backtester = Backtester(interval=interval)
+    backtester = Backtester()
     total_start = time.monotonic()
 
     for i, ticker in enumerate(tickers, 1):
@@ -380,9 +383,9 @@ def _run_calibration(
                     all_confidences.append(pred.confidence)
                     all_correct.append(pred.is_correct)
                     collected += 1
-            backtest_results.append(result)
             m = result.horizon_metrics.get(horizon)
             if m:
+                ticker_metrics[ticker] = m
                 print(
                     f"         done in {elapsed:.1f}s — {collected} predictions  |  "
                     f"acc {m.accuracy * 100:.1f}%  win {m.win_rate * 100:.1f}%  "
@@ -405,20 +408,46 @@ def _run_calibration(
     print("\n" + calibrator.get_calibration_table())
     calibrator.save(output_path)
     print(f"  Calibration saved to {output_path}")
+
+    if mlflow_run_id:
+        # Log calibration as its own run tagged with the training run_id.
+        # This avoids re-opening a completed run (which triggers unsupported
+        # API endpoints) while still linking calibration to its training run.
+        overall_accuracy = float(np.mean(all_correct))
+        tags = {
+            "run_type": "calibration",
+            "training_run_id": mlflow_run_id,
+        }
+        metrics: dict[str, float] = {
+            "cal_overall_accuracy": overall_accuracy,
+            "cal_total_predictions": float(len(all_confidences)),
+        }
+        for ticker, m in ticker_metrics.items():
+            safe = ticker.replace(".", "_").replace("-", "_")
+            metrics[f"cal_{safe}_accuracy"] = m.accuracy
+            metrics[f"cal_{safe}_win_rate"] = m.win_rate
+            metrics[f"cal_{safe}_sharpe"] = m.sharpe_ratio
+            metrics[f"cal_{safe}_net_return"] = m.net_total_return
+        try:
+            with mlflow.start_run(tags=tags):
+                mlflow.log_metrics(metrics)
+                mlflow.log_artifact(output_path, artifact_path="calibration")
+        except Exception as e:
+            print(f"Warning: Could not log calibration to MLflow: {e}")
+
     return True
 
 
 def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
     tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
-    interval = getattr(args, "interval", "1d")
-    output_path = args.output or ModelConfig.checkpoint_paths(interval)["calibration"]
+    output_path = args.output or ModelConfig.checkpoint_paths()["calibration"]
+    horizon = args.horizon if args.horizon is not None else 5
 
     ok = _run_calibration(
         tickers=tickers,
-        horizon=args.horizon,
+        horizon=horizon,
         output_path=output_path,
-        interval=interval,
         num_buckets=args.buckets,
     )
     if not ok:
@@ -502,13 +531,6 @@ Examples:
         "--no-mlflow", action="store_true", help="Disable MLflow experiment tracking"
     )
     train_parser.add_argument(
-        "--interval",
-        default="1d",
-        choices=["1d", "1h"],
-        help="Data interval: '1d' (daily, default) or '1h' (hourly). "
-             "Each interval trains a separate model.",
-    )
-    train_parser.add_argument(
         "--no-calibrate",
         action="store_true",
         dest="no_calibrate",
@@ -562,12 +584,6 @@ Examples:
              "look-ahead bias guard)",
     )
     backtest_parser.add_argument(
-        "--interval",
-        default="1d",
-        choices=["1d", "1h"],
-        help="Data interval matching the trained model: '1d' (daily, default) or '1h' (hourly).",
-    )
-    backtest_parser.add_argument(
         "--leverage",
         type=float,
         default=1.0,
@@ -618,20 +634,14 @@ Examples:
     calibrate_parser.add_argument(
         "--horizon",
         type=int,
-        default=5,
-        help="Prediction horizon to use for calibration (default: 5)",
+        default=None,
+        help="Prediction horizon in bars (default: 5 for 1d, 35 for 1h — matches training prediction_horizon)",
     )
     calibrate_parser.add_argument(
         "--buckets", type=int, default=10, help="Number of calibration buckets (default: 10)"
     )
     calibrate_parser.add_argument(
         "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"
-    )
-    calibrate_parser.add_argument(
-        "--interval",
-        default="1d",
-        choices=["1d", "1h"],
-        help="Data interval matching the trained model: '1d' (daily, default) or '1h' (hourly).",
     )
     calibrate_parser.set_defaults(func=cmd_calibrate)
 

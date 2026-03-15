@@ -58,13 +58,10 @@ Train the LSTM model. MLflow tracking is on by default.
 ```bash
 uv run python main.py train
 uv run python main.py train --epochs 100 --batch-size 64
-uv run python main.py train --interval 1h               # Train hourly model (separate checkpoint)
 uv run python main.py train --walk-forward              # Walk-forward validation
 uv run python main.py train --no-focal-loss             # Use standard cross-entropy
 uv run python main.py train --no-mlflow                 # Disable MLflow tracking
 ```
-
-Each `--interval` trains a fully independent model. See `ARCHITECTURE.md` for checkpoint paths and parameter defaults.
 
 ### `backtest <ticker>`
 Run the model on historical data day-by-day. Results are logged to MLflow automatically.
@@ -72,7 +69,6 @@ Run the model on historical data day-by-day. Results are logged to MLflow automa
 uv run python main.py backtest VOLV-B.ST
 uv run python main.py backtest VOLV-B.ST --horizons 1 3 5
 uv run python main.py backtest VOLV-B.ST --start-date 2024-01-01 --end-date 2024-12-31
-uv run python main.py backtest VOLV-B.ST --interval 1h  # Backtest the hourly model
 uv run python main.py backtest VOLV-B.ST --output results.csv
 uv run python main.py backtest VOLV-B.ST --no-mlflow    # Skip MLflow logging
 ```

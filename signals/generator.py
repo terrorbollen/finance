@@ -102,8 +102,6 @@ class Signal(BaseModel):
 class SignalGenerator:
     """Generates trading signals using the trained model."""
 
-    _INTERVAL_PERIOD: dict[str, str] = {"1d": "1y", "1h": "3mo"}
-
     def __init__(
         self,
         model_path: str | None = None,
@@ -114,7 +112,6 @@ class SignalGenerator:
         atr_multiplier: float = 2.0,
         take_profit_atr_multiplier: float = 3.0,
         max_position_size: float = 0.25,
-        interval: str = "1d",
         max_drawdown_pct: float | None = None,
         max_positions: int | None = None,
     ):
@@ -122,24 +119,22 @@ class SignalGenerator:
         Initialize the signal generator.
 
         Args:
-            model_path: Path to trained model weights. Defaults to interval-specific checkpoint.
+            model_path: Path to trained model weights. Defaults to checkpoint.
             sequence_length: Sequence length used during training
             stop_loss_pct: Fallback stop loss percentage if ATR unavailable
-            calibration_path: Path to calibration JSON. Defaults to interval-specific file.
+            calibration_path: Path to calibration JSON. Defaults to checkpoint file.
             min_confidence: Minimum calibrated confidence (0-100) to trade.
                             Signals below this threshold are forced to HOLD.
             atr_multiplier: Stop loss distance as a multiple of ATR (default: 2.0)
             take_profit_atr_multiplier: Take-profit distance as a multiple of ATR (default: 3.0).
             max_position_size: Hard cap on Kelly position size as fraction of capital (default: 0.25)
-            interval: Data interval — "1d" or "1h". Controls which model and fetcher to use.
             max_drawdown_pct: Maximum portfolio drawdown (positive %) before new BUY/SELL signals
                               are suppressed. E.g. 10.0 halts trading when the portfolio is down
                               10% from its peak. None disables this limit.
             max_positions: Maximum number of concurrent open positions. Signals for new positions
                            are forced to HOLD once this count is reached. None disables this limit.
         """
-        self.interval = interval
-        paths = ModelConfig.checkpoint_paths(interval)
+        paths = ModelConfig.checkpoint_paths()
         self.model_path = model_path or paths["weights"]
         self.sequence_length = sequence_length
         self.stop_loss_pct = stop_loss_pct
@@ -150,8 +145,7 @@ class SignalGenerator:
         self.max_drawdown_pct = max_drawdown_pct
         self.max_positions = max_positions
         self.model: SignalModel | None = None
-        period = self._INTERVAL_PERIOD.get(interval, "1y")
-        self.fetcher = StockDataFetcher(period=period, interval=interval)
+        self.fetcher = StockDataFetcher(period="1y")
 
         # Normalization params (should match training)
         self.feature_mean: np.ndarray | None = None
