@@ -1,7 +1,6 @@
 """Signal generation logic combining model predictions into actionable signals."""
 
 import os
-from enum import Enum
 
 import numpy as np
 import pandas as pd
@@ -12,14 +11,7 @@ from data.fetcher import StockDataFetcher
 from models.config import ModelConfig
 from models.signal_model import SignalModel
 from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
-
-
-class Direction(Enum):
-    """Trading signal direction."""
-
-    BUY = "BUY"
-    HOLD = "HOLD"
-    SELL = "SELL"
+from signals.direction import Direction
 
 
 class Signal(BaseModel):
@@ -140,8 +132,8 @@ class SignalGenerator:
             interval: Data interval — "1d" or "1h". Controls which model and fetcher to use.
         """
         self.interval = interval
-        suffix = "" if interval == "1d" else f"_{interval}"
-        self.model_path = model_path or f"checkpoints/signal_model{suffix}.weights.h5"
+        paths = ModelConfig.checkpoint_paths(interval)
+        self.model_path = model_path or paths["weights"]
         self.sequence_length = sequence_length
         self.stop_loss_pct = stop_loss_pct
         self.min_confidence = min_confidence
@@ -161,11 +153,11 @@ class SignalGenerator:
         # Confidence calibration
         self.calibrator: ConfidenceCalibrator | None = None
         self.directional_calibrator: DirectionalCalibrator | None = None
-        self.calibration_path = calibration_path or f"checkpoints/calibration{suffix}.json"
+        self.calibration_path = calibration_path or paths["calibration"]
         self.directional_calibration_path = (
             calibration_path.replace(".json", "_directional.json")
             if calibration_path
-            else f"checkpoints/calibration{suffix}_directional.json"
+            else paths["calibration_directional"]
         )
 
         # Load training config if available
@@ -234,11 +226,15 @@ class SignalGenerator:
 
         # Use feature columns from training config if available
         if self.feature_columns is not None:
-            # Filter to only columns that exist in the data
             available_cols = [c for c in self.feature_columns if c in df_features.columns]
-            if len(available_cols) != len(self.feature_columns):
-                missing = set(self.feature_columns) - set(available_cols)
-                print(f"Warning: Missing features from training: {missing}")
+            missing = set(self.feature_columns) - set(df_features.columns)
+            if missing:
+                missing_pct = len(missing) / len(self.feature_columns)
+                if missing_pct > 0.1:
+                    raise ValueError(
+                        f"Too many features missing from training config ({len(missing)}/{len(self.feature_columns)}): {missing}"
+                    )
+                print(f"Warning: {len(missing)} minor features missing from training: {missing}")
             feature_cols = available_cols
         else:
             feature_cols = engineer.get_feature_columns()
@@ -256,7 +252,10 @@ class SignalGenerator:
         if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
             features_norm = (features - self.feature_mean) / self.feature_std
         else:
-            # Fallback to current data statistics
+            print(
+                "Warning: Training normalization stats not available — falling back to "
+                "current-window statistics. Predictions may be unreliable. Re-train the model."
+            )
             mean = features.mean(axis=0)
             std = features.std(axis=0) + 1e-8
             features_norm = (features - mean) / std

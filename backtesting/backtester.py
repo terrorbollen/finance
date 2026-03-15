@@ -60,8 +60,7 @@ class Backtester:
             leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
         """
         self.interval = interval
-        suffix = "" if interval == "1d" else f"_{interval}"
-        self.model_path = model_path or f"checkpoints/signal_model{suffix}.weights.h5"
+        self.model_path = model_path or ModelConfig.checkpoint_paths(interval)["weights"]
         self.sequence_length = sequence_length
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -81,6 +80,7 @@ class Backtester:
             commission_pct=commission_pct,
             slippage_factor=slippage_factor,
             leverage=leverage,
+            interval=interval,
         )
 
         self._load_config()
@@ -96,6 +96,10 @@ class Backtester:
             self.sequence_length = cfg.sequence_length
             self.input_dim = cfg.input_dim
             self.holdout_start_date = cfg.holdout_start_date
+            self.buy_threshold = cfg.buy_threshold
+            self.sell_threshold = cfg.sell_threshold
+            self.metrics_calculator.buy_threshold = cfg.buy_threshold
+            self.metrics_calculator.sell_threshold = cfg.sell_threshold
 
     def _load_model(self, input_dim: int) -> None:
         """Load the trained model."""
@@ -138,6 +142,14 @@ class Backtester:
         # Get feature columns
         if self.feature_columns is not None:
             available_cols = [c for c in self.feature_columns if c in df.columns]
+            missing = set(self.feature_columns) - set(df.columns)
+            if missing:
+                missing_pct = len(missing) / len(self.feature_columns)
+                if missing_pct > 0.1:
+                    raise ValueError(
+                        f"Too many features missing from training config ({len(missing)}/{len(self.feature_columns)}): {missing}"
+                    )
+                print(f"Warning: {len(missing)} minor features missing from training: {missing}")
             feature_cols = available_cols
         else:
             feature_cols = engineer.get_feature_columns()
@@ -270,6 +282,10 @@ class Backtester:
         if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
             features_norm = (features - self.feature_mean) / self.feature_std
         else:
+            print(
+                "Warning: Training normalization stats not available — falling back to "
+                "current-window statistics. Predictions may be unreliable. Re-train the model."
+            )
             mean = features.mean(axis=0)
             std = features.std(axis=0) + 1e-8
             features_norm = (features - mean) / std
@@ -278,11 +294,12 @@ class Backtester:
         X = features_norm.reshape(1, self.sequence_length, -1)
 
         # Get prediction
-        assert self.model is not None
+        if self.model is None:
+            raise RuntimeError("Model not initialized — call _load_model() first")
         signal_probs, signal_class, price_target = self.model.predict(X)
 
         direction_idx = signal_class[0]
-        predicted_signal = Signal(direction_idx)
+        predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
         confidence = float(signal_probs[0][direction_idx])
         predicted_change = float(price_target[0])
 

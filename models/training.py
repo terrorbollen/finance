@@ -317,7 +317,8 @@ class ModelTrainer:
                 # Only use sample weights with standard cross-entropy
                 fit_kwargs["sample_weight"] = [sw_train, np.ones_like(sw_train)]
 
-            assert self.model.model is not None
+            if self.model.model is None:
+                raise RuntimeError("SignalModel.model is None after build()")
             history = self.model.model.fit(**fit_kwargs)
 
             # Evaluate on test set
@@ -335,8 +336,8 @@ class ModelTrainer:
             # Save training config for inference
             config_path = model_path.replace(".weights.h5", "_config.json")
 
-            assert self.feature_mean is not None, "prepare_data() must be called before training"
-            assert self.feature_std is not None, "prepare_data() must be called before training"
+            if self.feature_mean is None or self.feature_std is None:
+                raise RuntimeError("prepare_data() must be called before training")
             cfg = ModelConfig(
                 feature_columns=self.feature_columns,
                 feature_mean=self.feature_mean.tolist(),
@@ -346,6 +347,8 @@ class ModelTrainer:
                 interval=self.interval,
                 training_fetch_date=date.today(),
                 holdout_start_date=pd.Timestamp(latest_val_date).date(),
+                buy_threshold=self.buy_threshold,
+                sell_threshold=self.sell_threshold,
             )
             cfg.save(config_path)
             print(f"Saved model config to {config_path}")

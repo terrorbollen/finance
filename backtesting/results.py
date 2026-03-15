@@ -3,15 +3,8 @@
 import json
 from dataclasses import dataclass, field
 from datetime import date
-from enum import Enum
 
-
-class Signal(Enum):
-    """Trading signal direction."""
-
-    BUY = 0
-    HOLD = 1
-    SELL = 2
+from signals.direction import Direction as Signal
 
 
 @dataclass

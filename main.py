@@ -15,6 +15,7 @@ from models.mlflow_tracking import (
     setup_mlflow,
     training_run,
 )
+from models.config import ModelConfig
 from models.training import ModelTrainer
 from models.walk_forward import WalkForwardTrainer
 from signals.calibration import ConfidenceCalibrator
@@ -122,11 +123,10 @@ def cmd_train(args):
 
             # Auto-calibrate unless opted out
             if not args.no_calibrate:
-                suffix = "" if args.interval == "1d" else f"_{args.interval}"
                 _run_calibration(
                     tickers=results["loaded_tickers"],
                     horizon=5,
-                    output_path=f"checkpoints/calibration{suffix}.json",
+                    output_path=ModelConfig.checkpoint_paths(args.interval)["calibration"],
                     interval=args.interval,
                 )
     except Exception as e:
@@ -347,6 +347,8 @@ def _run_calibration(
 
     Returns True if calibration succeeded, False otherwise.
     """
+    import time
+
     import numpy as np
 
     print(f"\nCalibrating confidence using {len(tickers)} tickers (horizon={horizon}d)...")
@@ -354,18 +356,34 @@ def _run_calibration(
 
     all_confidences = []
     all_correct = []
+    backtest_results = []
 
     backtester = Backtester(interval=interval)
+    total_start = time.monotonic()
 
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers, 1):
         try:
-            print(f"  Backtesting {ticker}...")
+            print(f"  [{i}/{len(tickers)}] Backtesting {ticker}...", flush=True)
+            t0 = time.monotonic()
             result = backtester.run(ticker=ticker, horizons=[horizon])
+            elapsed = time.monotonic() - t0
+            collected = 0
             for daily in result.daily_predictions:
                 pred = daily.predictions.get(horizon)
                 if pred and pred.is_correct is not None:
                     all_confidences.append(pred.confidence)
                     all_correct.append(pred.is_correct)
+                    collected += 1
+            backtest_results.append(result)
+            m = result.horizon_metrics.get(horizon)
+            if m:
+                print(
+                    f"         done in {elapsed:.1f}s — {collected} predictions  |  "
+                    f"acc {m.accuracy * 100:.1f}%  win {m.win_rate * 100:.1f}%  "
+                    f"net {m.net_total_return:+.1f}%  sharpe {m.sharpe_ratio:.2f}"
+                )
+            else:
+                print(f"         done in {elapsed:.1f}s — {collected} predictions collected")
         except Exception as e:
             print(f"  Warning: Could not backtest {ticker}: {e}")
 
@@ -373,7 +391,8 @@ def _run_calibration(
         print(f"  Not enough data ({len(all_confidences)} predictions). Skipping calibration.")
         return False
 
-    print(f"  Collected {len(all_confidences)} predictions")
+    total_elapsed = time.monotonic() - total_start
+    print(f"\n  Collected {len(all_confidences)} predictions total in {total_elapsed:.1f}s")
 
     calibrator = ConfidenceCalibrator(num_buckets=num_buckets)
     calibrator.fit(np.array(all_confidences), np.array(all_correct))
@@ -387,8 +406,7 @@ def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
     tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
     interval = getattr(args, "interval", "1d")
-    suffix = "" if interval == "1d" else f"_{interval}"
-    output_path = args.output or f"checkpoints/calibration{suffix}.json"
+    output_path = args.output or ModelConfig.checkpoint_paths(interval)["calibration"]
 
     ok = _run_calibration(
         tickers=tickers,
@@ -602,6 +620,12 @@ Examples:
     )
     calibrate_parser.add_argument(
         "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"
+    )
+    calibrate_parser.add_argument(
+        "--interval",
+        default="1d",
+        choices=["1d", "1h"],
+        help="Data interval matching the trained model: '1d' (daily, default) or '1h' (hourly).",
     )
     calibrate_parser.set_defaults(func=cmd_calibrate)
 

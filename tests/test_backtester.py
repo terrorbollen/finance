@@ -3,6 +3,7 @@
 from datetime import date
 from unittest.mock import MagicMock
 
+import backtesting.backtester as bt_module
 import numpy as np
 import pandas as pd
 import pytest
@@ -45,6 +46,7 @@ def _backtester_with_mock_model(
 ) -> Backtester:
     """Return a Backtester with no real model/config loaded."""
     bt = Backtester.__new__(Backtester)
+    bt.interval = "1d"
     bt.model_path = "nonexistent.weights.h5"
     bt.sequence_length = sequence_length
     bt.buy_threshold = 0.02
@@ -69,58 +71,71 @@ def _backtester_with_mock_model(
 
 
 # ---------------------------------------------------------------------------
-# Holdout enforcement
+# Holdout enforcement — calls real bt.run() so changes to the guard are caught
 # ---------------------------------------------------------------------------
 
+def _patch_fetcher(monkeypatch, df: pd.DataFrame) -> None:
+    """Patch StockDataFetcher and FeatureEngineer so run() uses synthetic data."""
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch.return_value = df
+    mock_fetcher.fetch_cross_asset_data.return_value = {}
+    monkeypatch.setattr(bt_module, "StockDataFetcher", lambda **_: mock_fetcher)
+    monkeypatch.setattr(
+        bt_module,
+        "FeatureEngineer",
+        lambda df, **_: MagicMock(
+            add_all_features=lambda: df,
+            get_feature_columns=lambda: ["close"],
+        ),
+    )
+
+
 class TestHoldoutEnforcement:
-    def test_start_before_holdout_is_clamped(self):
-        bt = _backtester_with_mock_model(strict_holdout=True)
-        bt.holdout_start_date = date(2024, 6, 1)
+    def _bt(self, strict_holdout: bool, holdout_start_date: date | None) -> Backtester:
+        bt = _backtester_with_mock_model(strict_holdout=strict_holdout, sequence_length=5)
+        bt.holdout_start_date = holdout_start_date
+        bt.feature_columns = None  # use whatever columns come back
+        return bt
 
-        start = date(2024, 1, 1)  # before holdout
+    def test_start_before_holdout_is_clamped(self, monkeypatch):
+        """Result start_date is moved forward to holdout_start_date."""
+        df = _make_df(n_rows=60)
+        _patch_fetcher(monkeypatch, df)
 
-        # Simulate the guard block from run()
-        if bt.strict_holdout and bt.holdout_start_date and start < bt.holdout_start_date:
-            print(f"WARNING: Adjusting start to {bt.holdout_start_date}")
-            start = bt.holdout_start_date
+        bt = self._bt(strict_holdout=True, holdout_start_date=date(2023, 3, 1))
+        result = bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+        assert result.start_date >= date(2023, 3, 1)
 
-        assert start == date(2024, 6, 1)
+    def test_start_after_holdout_unchanged(self, monkeypatch):
+        """When start is already past holdout, it is not modified."""
+        df = _make_df(n_rows=60)
+        _patch_fetcher(monkeypatch, df)
 
-    def test_start_after_holdout_unchanged(self):
-        bt = _backtester_with_mock_model(strict_holdout=True)
-        bt.holdout_start_date = date(2024, 6, 1)
+        # Use dates within the synthetic df's range (60 business days from 2023-01-02)
+        requested_start = date(2023, 2, 1)
+        bt = self._bt(strict_holdout=True, holdout_start_date=date(2023, 1, 15))
+        result = bt.run("FAKE.ST", start_date=requested_start, end_date=date(2023, 3, 31))
+        assert result.start_date == requested_start
 
-        start = date(2024, 9, 1)  # after holdout
-        original = start
+    def test_no_holdout_date_does_not_adjust(self, monkeypatch):
+        """With no holdout date, any start is accepted."""
+        df = _make_df(n_rows=60)
+        _patch_fetcher(monkeypatch, df)
 
-        if bt.strict_holdout and bt.holdout_start_date and start < bt.holdout_start_date:
-            start = bt.holdout_start_date
+        requested_start = date(2023, 1, 2)
+        bt = self._bt(strict_holdout=True, holdout_start_date=None)
+        result = bt.run("FAKE.ST", start_date=requested_start, end_date=date(2023, 3, 31))
+        assert result.start_date == requested_start
 
-        assert start == original
+    def test_strict_holdout_false_accepts_early_start(self, monkeypatch):
+        """strict_holdout=False never adjusts the start date."""
+        df = _make_df(n_rows=60)
+        _patch_fetcher(monkeypatch, df)
 
-    def test_no_holdout_date_no_adjustment(self):
-        bt = _backtester_with_mock_model(strict_holdout=True)
-        bt.holdout_start_date = None
-
-        start = date(2020, 1, 1)
-        original = start
-
-        if bt.strict_holdout and bt.holdout_start_date and start < bt.holdout_start_date:
-            start = bt.holdout_start_date
-
-        assert start == original
-
-    def test_strict_holdout_false_skips_guard(self):
-        bt = _backtester_with_mock_model(strict_holdout=False)
-        bt.holdout_start_date = date(2024, 6, 1)
-
-        start = date(2024, 1, 1)
-        original = start
-
-        if bt.strict_holdout and bt.holdout_start_date and start < bt.holdout_start_date:
-            start = bt.holdout_start_date
-
-        assert start == original
+        requested_start = date(2023, 1, 2)
+        bt = self._bt(strict_holdout=False, holdout_start_date=date(2023, 6, 1))
+        result = bt.run("FAKE.ST", start_date=requested_start, end_date=date(2023, 3, 31))
+        assert result.start_date == requested_start
 
 
 # ---------------------------------------------------------------------------

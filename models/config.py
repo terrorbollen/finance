@@ -30,6 +30,8 @@ class ModelConfig(BaseModel):
     interval: Literal["1d", "1h"] = "1d"
     training_fetch_date: date
     holdout_start_date: date
+    buy_threshold: float = 0.015
+    sell_threshold: float = -0.015
 
     @field_validator("feature_std")
     @classmethod
@@ -80,3 +82,14 @@ class ModelConfig(BaseModel):
         """Write config to a JSON file, creating parent directories as needed."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(self.model_dump_json(indent=2))
+
+    @staticmethod
+    def checkpoint_paths(interval: str) -> dict[str, str]:
+        """Return the canonical checkpoint file paths for a given interval."""
+        suffix = "" if interval == "1d" else f"_{interval}"
+        return {
+            "weights": f"checkpoints/signal_model{suffix}.weights.h5",
+            "config": f"checkpoints/signal_model{suffix}_config.json",
+            "calibration": f"checkpoints/calibration{suffix}.json",
+            "calibration_directional": f"checkpoints/calibration{suffix}_directional.json",
+        }
