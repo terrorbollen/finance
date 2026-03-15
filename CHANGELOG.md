@@ -4,6 +4,18 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-15 (session 7)
+
+### ADX regime filter and pre-2025 holdout retraining
+
+`HorizonPrediction` now carries an `adx` field (ADX-14 value on the prediction date), populated by the backtester from the already-computed `adx_14` feature column. `PortfolioBacktester` accepts an `adx_filter` parameter; when set, BUY signals are skipped if ADX is below the threshold. CLI flag: `--adx-filter N` on the `portfolio` command. The indexes model was retrained with `--holdout-start 2025-01-01` (new CLI flag on `train`), enforcing a clean calendar boundary and using all pre-2025 data for training. `ModelTrainer` accepts a `holdout_date` parameter that clips each ticker's feature array to dates strictly before the boundary before any splitting occurs.
+
+### Temporal consistency analysis — critical finding documented
+
+Per-quarter portfolio backtests revealed that 15 of 16 ADX-filtered trades occurred in Q2 2025 (April–June, tariff-shock period). The remaining 4 quarters produced 0–1 trades each. The +14.1% headline return and 93.8% win rate are real but temporally concentrated — not demonstrated across multiple independent active periods. The ADX≥25 threshold was also selected by comparing three values on the same holdout data (mild in-sample selection). Full findings documented in `backtesting/STRATEGY.md`. Recommendation: paper trade for 3–6 months covering at least one more high-ADX regime before committing capital.
+
+---
+
 ## 2026-03-15 (session 6)
 
 ### Named model checkpoints

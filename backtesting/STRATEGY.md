@@ -153,11 +153,47 @@ Key observations:
 
 ---
 
+## EU-5 Indexes Model — Portfolio Evaluation (March 2026)
+
+Model: `indexes` (EU-5: ^STOXX50E, ^GDAXI, ^FCHI, ^OMXS30, ^AEX)
+Holdout: 2025-01-01 → 2026-03-13 (full calendar year+)
+Method: shared-capital portfolio backtester, 5d horizon, 2x leverage
+
+**ADX regime filter comparison (full holdout):**
+
+| Config | Return | Sharpe | Max DD | Trades | Win Rate |
+|---|---|---|---|---|---|
+| No filter | -10.1% | -1.68 | -24.8% | 22 | 54.5% |
+| ADX ≥ 20 | -0.4% | -0.39 | -14.8% | 20 | 60.0% |
+| ADX ≥ 25 | +14.1% | 3.33 | -5.1% | 16 | 93.8% |
+
+**Temporal breakdown (ADX ≥ 25, 2x leverage):**
+
+| Quarter | Trades | Return | Notes |
+|---|---|---|---|
+| Q1 2025 (Jan–Mar) | 0 | — | Markets ranging pre-tariff; no ADX≥25 signals |
+| Q2 2025 (Apr–Jun) | 15 | +13.4% | Tariff-shock period; strong trending conditions |
+| Q3 2025 (Jul–Sep) | 0 | — | Post-recovery ranging |
+| Q4 2025 (Oct–Dec) | 1 | +0.8% | Single signal |
+| Q1 2026 (Jan–Mar) | 0 | — | Ranging again |
+
+**Critical finding:** 15 of 16 trades occurred in a single quarter (Q2 2025) during an exceptional market regime (tariff shock → trending). The headline +14.1% is almost entirely from that window. The ADX filter correctly avoided Q1 2025 (6 trades, 0% win rate, -6.2%) but the model otherwise produces very few signals across normal ranging markets.
+
+**What this means for trust:**
+- The ADX≥25 filter demonstrably improves signal quality by skipping choppy periods
+- A 93.8% win rate on 16 trades is statistically significant (p ≈ 0.0003) but temporally concentrated
+- Performance has not been demonstrated across multiple independent active periods — one market event does not constitute a proven edge
+- Paper trade for 3–6 months covering at least one more active (high-ADX) regime before committing capital
+
+---
+
 ## Known Limitations
 
-- **Short holdout**: 122 days is not a full market cycle. Results haven't been tested through a sustained bear market.
+- **Temporal concentration**: The indexes model's holdout performance is concentrated in a single quarter (Q2 2025). Consistency across regimes is unproven.
+- **Short holdout**: The full holdout spans ~15 months but only ~1 quarter was active. Results haven't been tested through a sustained bear market.
+- **ADX threshold selection**: The ADX≥25 threshold was chosen by comparing 0/20/25 on the same holdout data. This is mild in-sample selection; do not rely on exactly 25 being optimal.
 - **SELL bias**: BUY recall is consistently higher than SELL recall. The model is better at identifying upside.
 - **Single model**: No ensemble. One unlucky training run can produce a bad model.
 - **Calibration**: The calibrator is fitted on the same tickers used for backtesting. Confidence scores are directionally correct but not perfectly out-of-sample.
 - **Ticker scope**: Only works on tickers in the trained universe. Predicts pure HOLD on any unseen ticker. To add a ticker, retrain with it included.
-- **Correlated tickers**: All tickers are Swedish large-caps with high mutual correlation. A broader multi-market test would be more robust.
+- **Correlated indexes**: All EU-5 indexes are highly correlated. A sustained European bear market would likely hit all five simultaneously.
