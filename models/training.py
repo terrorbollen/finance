@@ -31,8 +31,8 @@ class ModelTrainer:
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
         prediction_horizons: list[int] | None = None,
-        buy_threshold: float = 0.015,
-        sell_threshold: float = -0.015,
+        buy_threshold: float = 0.02,
+        sell_threshold: float = -0.02,
         use_adaptive_thresholds: bool = True,
     ):
         """
@@ -84,15 +84,16 @@ class ModelTrainer:
         df_features = engineer.add_all_features()
         self.feature_columns = engineer.get_feature_columns()
 
-        # Determine thresholds (adaptive or fixed)
+        # Determine base thresholds (adaptive scales WITH volatility — higher vol → higher thresh)
         if self.use_adaptive_thresholds:
             volatility = df_features["close"].pct_change().rolling(20).std().median()
-            scale = max(volatility / 0.015, 0.5)
-            buy_thresh = self.buy_threshold * scale
-            sell_thresh = self.sell_threshold * scale
+            ref_vol = 0.01  # 1% daily vol reference (typical Swedish large-cap)
+            scale = max(volatility / ref_vol, 0.5)
+            base_buy_thresh = self.buy_threshold * scale
+            base_sell_thresh = self.sell_threshold * scale
         else:
-            buy_thresh = self.buy_threshold
-            sell_thresh = self.sell_threshold
+            base_buy_thresh = self.buy_threshold
+            base_sell_thresh = self.sell_threshold
 
         # Max-return labeling: for each horizon h, label Buy if the best price
         # achievable over the next h days exceeds buy_thresh; label Sell if the
@@ -108,7 +109,14 @@ class ModelTrainer:
 
         from numpy.lib.stride_tricks import sliding_window_view  # noqa: PLC0415
 
+        base_h = self.prediction_horizons[0]  # shortest horizon is the reference
         for h in self.prediction_horizons:
+            # Scale threshold by sqrt(h) so each horizon requires a proportional move
+            # (a 20d window needs 2x the threshold of a 5d window to maintain equal label rates)
+            horizon_scale = np.sqrt(h / base_h)
+            buy_thresh = base_buy_thresh * horizon_scale
+            sell_thresh = base_sell_thresh * horizon_scale
+
             max_ret = np.full(n, np.nan)
             min_ret = np.full(n, np.nan)
             if n > h:
@@ -119,8 +127,18 @@ class ModelTrainer:
             # Store labels as columns so dropna() aligns them automatically
             lbl = np.ones(n, dtype=float)  # HOLD=1 (float to allow NaN passthrough)
             lbl[np.isnan(max_ret)] = np.nan
-            lbl[max_ret > buy_thresh] = 0                                # BUY
-            lbl[(max_ret <= buy_thresh) & (min_ret < sell_thresh)] = 2  # SELL
+
+            buy_cond = max_ret > buy_thresh
+            sell_cond = min_ret < sell_thresh  # sell_thresh is negative
+
+            # Non-conflicting cases
+            lbl[buy_cond & ~sell_cond] = 0   # BUY
+            lbl[sell_cond & ~buy_cond] = 2   # SELL
+
+            # Conflict: both thresholds crossed — label by larger magnitude
+            conflict = buy_cond & sell_cond & ~np.isnan(max_ret)
+            lbl[conflict & (max_ret >= np.abs(min_ret))] = 0  # upside wins
+            lbl[conflict & (max_ret < np.abs(min_ret))] = 2   # downside wins
             df_features[f"_label_{h}d"] = lbl
 
         # Drop rows with NaN (TA warmup + last max_horizon rows without future prices)

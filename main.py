@@ -155,6 +155,7 @@ def _run_leverage_comparison(args, start_date, end_date, horizons):
             commission_pct=args.commission,
             strict_holdout=not args.no_strict_holdout,
             leverage=lev,
+            enforce_position_cooldown=args.position_cooldown,
         )
         result = backtester.run(
             ticker=args.ticker,
@@ -209,6 +210,7 @@ def cmd_backtest(args):
         commission_pct=args.commission,
         strict_holdout=not args.no_strict_holdout,
         leverage=args.leverage,
+        enforce_position_cooldown=args.position_cooldown,
     )
     try:
         result = backtester.run(
@@ -593,6 +595,13 @@ Examples:
         action="store_true",
         dest="compare_leverage",
         help="Run backtest at 1x, 2x, and 3x leverage and print a comparison table.",
+    )
+    backtest_parser.add_argument(
+        "--position-cooldown",
+        action="store_true",
+        dest="position_cooldown",
+        help="Enforce non-overlapping positions: after a trade, skip the next N days "
+             "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
 

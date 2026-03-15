@@ -47,6 +47,7 @@ class MetricsCalculator:
         commission_pct: float = 0.001,
         slippage_factor: float = 0.0,
         leverage: float = 1.0,
+        enforce_position_cooldown: bool = False,
     ):
         """
         Initialize metrics calculator.
@@ -61,12 +62,15 @@ class MetricsCalculator:
             leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
                       Commission and slippage are also scaled by leverage since they apply
                       to the full leveraged notional.
+            enforce_position_cooldown: If True, after a non-HOLD trade skip the next
+                                       horizon predictions to avoid overlapping positions.
         """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.commission_pct = commission_pct
         self.slippage_factor = slippage_factor
         self.leverage = leverage
+        self.enforce_position_cooldown = enforce_position_cooldown
 
     def calculate_horizon_metrics(
         self,
@@ -106,7 +110,7 @@ class MetricsCalculator:
         price_mae, price_rmse = self._calculate_price_metrics(completed)
 
         # Calculate simulated trading returns
-        trading = self._calculate_trading_metrics(completed)
+        trading = self._calculate_trading_metrics(completed, horizon=horizon)
 
         return HorizonMetrics(
             horizon_days=horizon,
@@ -216,7 +220,11 @@ class MetricsCalculator:
 
         return float(mae), float(rmse)
 
-    def _calculate_trading_metrics(self, predictions: list[HorizonPrediction]) -> TradingMetrics:
+    def _calculate_trading_metrics(
+        self,
+        predictions: list[HorizonPrediction],
+        horizon: int = 1,
+    ) -> TradingMetrics:
         """
         Calculate simulated trading metrics including risk-adjusted returns.
 
@@ -230,6 +238,21 @@ class MetricsCalculator:
         Returns:
             Dict of trading metrics for HorizonMetrics fields.
         """
+        # Apply position cooldown: after a non-HOLD trade, skip the next
+        # `horizon` predictions to avoid overlapping positions.
+        if self.enforce_position_cooldown and horizon > 1:
+            sorted_preds = sorted(predictions, key=lambda p: p.prediction_date)
+            cooldown_remaining = 0
+            filtered: list[HorizonPrediction] = []
+            for p in sorted_preds:
+                if cooldown_remaining > 0:
+                    cooldown_remaining -= 1
+                    continue
+                filtered.append(p)
+                if p.predicted_signal != Signal.HOLD and p.actual_price_change is not None:
+                    cooldown_remaining = horizon - 1
+            predictions = filtered
+
         gross_returns: list[float] = []
         net_returns: list[float] = []
         equity_points: list[tuple[date, float]] = []  # (prediction_date, net_return)

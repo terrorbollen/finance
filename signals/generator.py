@@ -108,7 +108,7 @@ class SignalGenerator:
         sequence_length: int = 20,
         stop_loss_pct: float = 0.05,
         calibration_path: str | None = None,
-        min_confidence: float | None = None,
+        min_confidence: float | None = 55.0,
         atr_multiplier: float = 2.0,
         take_profit_atr_multiplier: float = 3.0,
         max_position_size: float = 0.25,
@@ -123,7 +123,7 @@ class SignalGenerator:
             sequence_length: Sequence length used during training
             stop_loss_pct: Fallback stop loss percentage if ATR unavailable
             calibration_path: Path to calibration JSON. Defaults to checkpoint file.
-            min_confidence: Minimum calibrated confidence (0-100) to trade.
+            min_confidence: Minimum calibrated confidence (0-100) to trade (default 55.0).
                             Signals below this threshold are forced to HOLD.
             atr_multiplier: Stop loss distance as a multiple of ATR (default: 2.0)
             take_profit_atr_multiplier: Take-profit distance as a multiple of ATR (default: 3.0).

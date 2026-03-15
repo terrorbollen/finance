@@ -37,6 +37,7 @@ class Backtester:
         strict_holdout: bool = True,
         slippage_factor: float = 0.1,
         leverage: float = 1.0,
+        enforce_position_cooldown: bool = False,
     ):
         """
         Initialize the backtester.
@@ -54,6 +55,8 @@ class Backtester:
                              slippage_pct = slippage_factor / sqrt(relative_volume),
                              capped at 0.5% per trade. Set to 0 to disable slippage.
             leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
+            enforce_position_cooldown: If True, after a non-HOLD trade skip the next
+                                       horizon predictions to avoid overlapping positions.
         """
         self.model_path = model_path or ModelConfig.checkpoint_paths()["weights"]
         self.sequence_length = sequence_length
@@ -61,6 +64,7 @@ class Backtester:
         self.sell_threshold = sell_threshold
         self.strict_holdout = strict_holdout
         self.slippage_factor = slippage_factor
+        self.enforce_position_cooldown = enforce_position_cooldown
 
         self.model: SignalModel | None = None
         self.feature_columns: list[str] | None = None
@@ -76,6 +80,7 @@ class Backtester:
             commission_pct=commission_pct,
             slippage_factor=slippage_factor,
             leverage=leverage,
+            enforce_position_cooldown=enforce_position_cooldown,
         )
 
         self._load_config()
@@ -94,8 +99,14 @@ class Backtester:
             self.buy_threshold = cfg.buy_threshold
             self.sell_threshold = cfg.sell_threshold
             self.prediction_horizons = cfg.prediction_horizons
-            self.metrics_calculator.buy_threshold = cfg.buy_threshold
-            self.metrics_calculator.sell_threshold = cfg.sell_threshold
+            self.metrics_calculator = MetricsCalculator(
+                buy_threshold=cfg.buy_threshold,
+                sell_threshold=cfg.sell_threshold,
+                commission_pct=self.metrics_calculator.commission_pct,
+                slippage_factor=self.metrics_calculator.slippage_factor,
+                leverage=self.metrics_calculator.leverage,
+                enforce_position_cooldown=getattr(self, "enforce_position_cooldown", False),
+            )
 
     def _load_model(self, input_dim: int) -> None:
         """Load the trained model and warm up TF graph compilation."""

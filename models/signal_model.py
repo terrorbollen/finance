@@ -47,7 +47,9 @@ class SignalModel:
         inputs = keras.Input(shape=(self.sequence_length, self.input_dim))
 
         # Shared LSTM backbone
-        x = keras.layers.LSTM(self.hidden_units[0], return_sequences=False)(inputs)
+        x = keras.layers.LSTM(self.hidden_units[0], return_sequences=True)(inputs)
+        x = keras.layers.MultiHeadAttention(num_heads=4, key_dim=self.hidden_units[0] // 4)(x, x)
+        x = keras.layers.GlobalAveragePooling1D()(x)
         x = keras.layers.Dropout(self.dropout_rate)(x)
         x = keras.layers.Dense(self.hidden_units[1], activation="relu")(x)
         x = keras.layers.BatchNormalization()(x)
