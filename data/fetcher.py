@@ -163,6 +163,14 @@ class StockDataFetcher:
 
         return aligned
 
+    def fetch_cross_asset_data(self, align_to: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+        """Fetch OMXS30, USD/SEK, and EUR/SEK reference data aligned to align_to."""
+        return {
+            "omxs30": self.fetch_reference_series("^OMX", align_to),
+            "usdsek": self.fetch_reference_series("USDSEK=X", align_to),
+            "eursek": self.fetch_reference_series("EURSEK=X", align_to),
+        }
+
     @staticmethod
     def list_swedish_tickers() -> dict[str, str]:
         """Return a dictionary of available Swedish ticker aliases."""

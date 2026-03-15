@@ -1,17 +1,17 @@
 """Signal generation logic combining model predictions into actionable signals."""
 
-import json
 import os
-from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
+from models.config import ModelConfig
 from models.signal_model import SignalModel
-from signals.calibration import ConfidenceCalibrator
+from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
 
 
 class Direction(Enum):
@@ -22,9 +22,10 @@ class Direction(Enum):
     SELL = "SELL"
 
 
-@dataclass
-class Signal:
+class Signal(BaseModel):
     """Trading signal with all relevant information."""
+
+    model_config = ConfigDict(use_enum_values=False)
 
     ticker: str
     direction: Direction
@@ -38,6 +39,49 @@ class Signal:
     position_size: float = 1.0  # fraction of capital (0-1), Kelly-based
     raw_confidence: float | None = None  # 0-100% (raw model output)
     is_calibrated: bool = False
+
+    @field_validator("confidence")
+    @classmethod
+    def confidence_in_range(cls, v: float) -> float:
+        if not 0 <= v <= 100:
+            raise ValueError(f"confidence must be 0-100, got {v:.1f}")
+        return v
+
+    @field_validator("position_size")
+    @classmethod
+    def position_size_in_range(cls, v: float) -> float:
+        if not 0 <= v <= 1:
+            raise ValueError(f"position_size must be 0-1, got {v:.3f}")
+        return v
+
+    @field_validator("current_price", "entry_price", "target_price", "stop_loss")
+    @classmethod
+    def prices_must_be_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(f"Price values must be positive, got {v}")
+        return v
+
+    @model_validator(mode="after")
+    def check_price_logic(self) -> "Signal":
+        if self.direction == Direction.BUY:
+            if self.stop_loss >= self.current_price:
+                raise ValueError(
+                    f"BUY signal: stop_loss ({self.stop_loss:.2f}) must be below current_price ({self.current_price:.2f})"
+                )
+            if self.target_price <= self.current_price:
+                raise ValueError(
+                    f"BUY signal: target_price ({self.target_price:.2f}) must be above current_price ({self.current_price:.2f})"
+                )
+        elif self.direction == Direction.SELL:
+            if self.stop_loss <= self.current_price:
+                raise ValueError(
+                    f"SELL signal: stop_loss ({self.stop_loss:.2f}) must be above current_price ({self.current_price:.2f})"
+                )
+            if self.target_price >= self.current_price:
+                raise ValueError(
+                    f"SELL signal: target_price ({self.target_price:.2f}) must be below current_price ({self.current_price:.2f})"
+                )
+        return self
 
     def __str__(self) -> str:
         """Format signal for display."""
@@ -66,9 +110,11 @@ class Signal:
 class SignalGenerator:
     """Generates trading signals using the trained model."""
 
+    _INTERVAL_PERIOD: dict[str, str] = {"1d": "1y", "1h": "3mo"}
+
     def __init__(
         self,
-        model_path: str = "checkpoints/signal_model.weights.h5",
+        model_path: str | None = None,
         sequence_length: int = 20,
         stop_loss_pct: float = 0.05,
         calibration_path: str | None = None,
@@ -76,24 +122,26 @@ class SignalGenerator:
         atr_multiplier: float = 2.0,
         take_profit_atr_multiplier: float = 3.0,
         max_position_size: float = 0.25,
+        interval: str = "1d",
     ):
         """
         Initialize the signal generator.
 
         Args:
-            model_path: Path to trained model weights
+            model_path: Path to trained model weights. Defaults to interval-specific checkpoint.
             sequence_length: Sequence length used during training
             stop_loss_pct: Fallback stop loss percentage if ATR unavailable
-            calibration_path: Path to calibration JSON (default: checkpoints/calibration.json)
+            calibration_path: Path to calibration JSON. Defaults to interval-specific file.
             min_confidence: Minimum calibrated confidence (0-100) to trade.
                             Signals below this threshold are forced to HOLD.
             atr_multiplier: Stop loss distance as a multiple of ATR (default: 2.0)
             take_profit_atr_multiplier: Take-profit distance as a multiple of ATR (default: 3.0).
-                                        Gives a 3:2 reward/risk ratio with the default stop.
-                                        Falls back to model's predicted change if ATR unavailable.
             max_position_size: Hard cap on Kelly position size as fraction of capital (default: 0.25)
+            interval: Data interval — "1d" or "1h". Controls which model and fetcher to use.
         """
-        self.model_path = model_path
+        self.interval = interval
+        suffix = "" if interval == "1d" else f"_{interval}"
+        self.model_path = model_path or f"checkpoints/signal_model{suffix}.weights.h5"
         self.sequence_length = sequence_length
         self.stop_loss_pct = stop_loss_pct
         self.min_confidence = min_confidence
@@ -101,7 +149,8 @@ class SignalGenerator:
         self.take_profit_atr_multiplier = take_profit_atr_multiplier
         self.max_position_size = max_position_size
         self.model: SignalModel | None = None
-        self.fetcher = StockDataFetcher(period="1y")
+        period = self._INTERVAL_PERIOD.get(interval, "1y")
+        self.fetcher = StockDataFetcher(period=period, interval=interval)
 
         # Normalization params (should match training)
         self.feature_mean: np.ndarray | None = None
@@ -111,26 +160,43 @@ class SignalGenerator:
 
         # Confidence calibration
         self.calibrator: ConfidenceCalibrator | None = None
-        self.calibration_path = calibration_path or "checkpoints/calibration.json"
+        self.directional_calibrator: DirectionalCalibrator | None = None
+        self.calibration_path = calibration_path or f"checkpoints/calibration{suffix}.json"
+        self.directional_calibration_path = (
+            calibration_path.replace(".json", "_directional.json")
+            if calibration_path
+            else f"checkpoints/calibration{suffix}_directional.json"
+        )
 
         # Load training config if available
         self._load_config()
         self._load_calibrator()
 
-    def _load_config(self):
+    def _load_config(self) -> None:
         """Load training configuration from file."""
         config_path = self.model_path.replace(".weights.h5", "_config.json")
         if os.path.exists(config_path):
-            with open(config_path) as f:
-                config = json.load(f)
-            self.feature_columns = config.get("feature_columns")
-            self.feature_mean = np.array(config.get("feature_mean"))
-            self.feature_std = np.array(config.get("feature_std"))
-            self.sequence_length = config.get("sequence_length", self.sequence_length)
-            self.input_dim = config.get("input_dim")
+            cfg = ModelConfig.load(config_path)
+            self.feature_columns = cfg.feature_columns
+            self.feature_mean = cfg.feature_mean_array
+            self.feature_std = cfg.feature_std_array
+            self.sequence_length = cfg.sequence_length
+            self.input_dim = cfg.input_dim
 
-    def _load_calibrator(self):
-        """Load confidence calibrator if available."""
+    def _load_calibrator(self) -> None:
+        """Load confidence calibrators if available. Prefers directional calibrator."""
+        if os.path.exists(self.directional_calibration_path):
+            try:
+                self.directional_calibrator = DirectionalCalibrator.load(
+                    self.directional_calibration_path
+                )
+                print(
+                    f"Loaded directional calibration from {self.directional_calibration_path}"
+                )
+            except Exception as e:
+                print(f"Warning: Could not load directional calibration: {e}")
+                self.directional_calibrator = None
+
         if os.path.exists(self.calibration_path):
             try:
                 self.calibrator = ConfidenceCalibrator.load(self.calibration_path)
@@ -139,7 +205,7 @@ class SignalGenerator:
                 print(f"Warning: Could not load calibration: {e}")
                 self.calibrator = None
 
-    def _load_model(self, input_dim: int):
+    def _load_model(self, input_dim: int) -> None:
         """Load the trained model."""
         self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
         try:
@@ -161,8 +227,9 @@ class SignalGenerator:
         # Fetch data
         df = self.fetcher.fetch(ticker)
 
-        # Add features
-        engineer = FeatureEngineer(df)
+        # Add features (including cross-asset reference data)
+        ref_data = self.fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
+        engineer = FeatureEngineer(df, reference_data=ref_data)
         df_features = engineer.add_all_features()
 
         # Use feature columns from training config if available
@@ -211,8 +278,18 @@ class SignalGenerator:
         raw_confidence = float(signal_probs[0][direction_idx])
         predicted_change = float(price_target[0])
 
-        # Apply confidence calibration if available
-        if self.calibrator is not None and self.calibrator.is_fitted:
+        # Apply confidence calibration — directional takes priority over global
+        if (
+            self.directional_calibrator is not None
+            and self.directional_calibrator.is_fitted_for(direction.value)
+        ):
+            calibrated_confidence = self.directional_calibrator.calibrate(
+                direction.value, raw_confidence
+            )
+            confidence = calibrated_confidence * 100
+            raw_confidence_pct = raw_confidence * 100
+            is_calibrated = True
+        elif self.calibrator is not None and self.calibrator.is_fitted:
             calibrated_confidence = self.calibrator.calibrate(raw_confidence)
             confidence = calibrated_confidence * 100
             raw_confidence_pct = raw_confidence * 100

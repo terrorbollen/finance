@@ -1,4 +1,4 @@
-"""Tests for the ConfidenceCalibrator class."""
+"""Tests for the ConfidenceCalibrator and DirectionalCalibrator classes."""
 
 import tempfile
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from signals.calibration import CalibrationBucket, ConfidenceCalibrator
+from signals.calibration import CalibrationBucket, ConfidenceCalibrator, DirectionalCalibrator
 
 
 class TestConfidenceCalibrator:
@@ -176,6 +176,98 @@ class TestConfidenceCalibrator:
 
         assert calibrator.is_fitted
         # Buckets may not be monotonic without enforcement
+
+
+class TestDirectionalCalibrator:
+    """Tests for DirectionalCalibrator."""
+
+    def _make_data(self, n: int = 200) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(42)
+        confidences = rng.uniform(0.3, 0.9, n)
+        correct = confidences > rng.uniform(0, 1, n)
+        return confidences, correct
+
+    def test_unfitted_returns_raw(self):
+        dc = DirectionalCalibrator()
+        assert dc.calibrate("BUY", 0.7) == 0.7
+        assert dc.calibrate("SELL", 0.4) == 0.4
+
+    def test_is_fitted_false_when_empty(self):
+        dc = DirectionalCalibrator()
+        assert not dc.is_fitted
+        assert not dc.is_fitted_for("BUY")
+
+    def test_fit_single_direction(self):
+        dc = DirectionalCalibrator()
+        confidences, correct = self._make_data()
+        dc.fit("BUY", confidences, correct)
+
+        assert dc.is_fitted
+        assert dc.is_fitted_for("BUY")
+        assert not dc.is_fitted_for("SELL")
+
+        result = dc.calibrate("BUY", 0.7)
+        assert 0 <= result <= 1
+
+    def test_unfitted_direction_falls_back_to_raw(self):
+        dc = DirectionalCalibrator()
+        confidences, correct = self._make_data()
+        dc.fit("BUY", confidences, correct)
+
+        # SELL has no calibrator — should return raw value
+        assert dc.calibrate("SELL", 0.6) == 0.6
+
+    def test_fit_all_directions(self):
+        dc = DirectionalCalibrator()
+        confidences, correct = self._make_data()
+        for direction in ("BUY", "SELL", "HOLD"):
+            dc.fit(direction, confidences, correct)
+
+        assert all(dc.is_fitted_for(d) for d in ("BUY", "SELL", "HOLD"))
+
+    def test_save_and_load(self):
+        dc = DirectionalCalibrator()
+        confidences, correct = self._make_data()
+        dc.fit("BUY", confidences, correct)
+        dc.fit("SELL", confidences, correct)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "directional.json"
+            dc.save(str(path))
+
+            loaded = DirectionalCalibrator.load(str(path))
+
+        assert loaded.is_fitted_for("BUY")
+        assert loaded.is_fitted_for("SELL")
+        assert not loaded.is_fitted_for("HOLD")
+
+        for conf in [0.3, 0.5, 0.8]:
+            assert dc.calibrate("BUY", conf) == loaded.calibrate("BUY", conf)
+
+    def test_from_backtest_results(self):
+        rng = np.random.default_rng(0)
+        daily = []
+        for _ in range(300):
+            direction = rng.choice(["BUY", "SELL", "HOLD"])
+            daily.append({
+                "date": "2024-01-01",
+                "current_price": 100.0,
+                "predictions": {
+                    "5": {
+                        "predicted_signal": direction,
+                        "confidence": float(rng.uniform(0.4, 0.9)),
+                        "is_correct": bool(rng.integers(0, 2)),
+                    }
+                },
+            })
+
+        results = [{"daily_predictions": daily}]
+        dc = DirectionalCalibrator.from_backtest_results(results, horizon=5)
+        assert dc.is_fitted
+
+    def test_from_backtest_results_no_data_raises(self):
+        with pytest.raises(ValueError):
+            DirectionalCalibrator.from_backtest_results([], horizon=5)
 
 
 class TestCalibrationBucket:

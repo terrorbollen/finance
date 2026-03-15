@@ -327,7 +327,7 @@ class FeatureEngineer:
             1 if the row is the last trading day of a quarter-end month
             (March, June, September, December), else 0.
         """
-        idx = self.df.index
+        idx = pd.DatetimeIndex(self.df.index)
 
         # day_of_week: 0=Mon … 4=Fri → normalize to [0, 1]
         # Clip to [0, 4] in case the index contains weekend dates (e.g. in tests).

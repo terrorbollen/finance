@@ -278,3 +278,143 @@ class ConfidenceCalibrator:
         calibrator.fit(np.array(confidences), np.array(correct))
 
         return calibrator
+
+
+class DirectionalCalibrator:
+    """
+    Holds separate ConfidenceCalibrators for BUY, SELL, and HOLD.
+
+    A single global calibrator ignores the fact that the model may be
+    systematically over- or under-confident in different directions.
+    This class fits one calibrator per direction so each is corrected
+    independently.
+    """
+
+    DIRECTIONS = ("BUY", "SELL", "HOLD")
+
+    def __init__(self, num_buckets: int = 10):
+        self.num_buckets = num_buckets
+        self.calibrators: dict[str, ConfidenceCalibrator] = {}
+
+    @property
+    def is_fitted(self) -> bool:
+        return any(c.is_fitted for c in self.calibrators.values())
+
+    def is_fitted_for(self, direction: str) -> bool:
+        return direction in self.calibrators and self.calibrators[direction].is_fitted
+
+    def fit(
+        self,
+        direction: str,
+        raw_confidences: np.ndarray,
+        correct: np.ndarray,
+    ) -> "DirectionalCalibrator":
+        """Fit the calibrator for a single direction."""
+        cal = ConfidenceCalibrator(num_buckets=self.num_buckets)
+        cal.fit(raw_confidences, correct)
+        self.calibrators[direction] = cal
+        return self
+
+    def calibrate(self, direction: str, raw_confidence: float) -> float:
+        """
+        Return calibrated confidence for the given direction.
+        Falls back to the raw value if that direction has no calibrator.
+        """
+        if self.is_fitted_for(direction):
+            return self.calibrators[direction].calibrate(raw_confidence)
+        return raw_confidence
+
+    def save(self, path: str):
+        """Save all per-direction calibrators to a single JSON file."""
+        data = {
+            "num_buckets": self.num_buckets,
+            "calibrators": {
+                direction: {
+                    "num_buckets": cal.num_buckets,
+                    "min_samples_per_bucket": cal.min_samples_per_bucket,
+                    "is_fitted": cal.is_fitted,
+                    "buckets": [
+                        {
+                            "raw_min": b.raw_min,
+                            "raw_max": b.raw_max,
+                            "calibrated": b.calibrated,
+                            "sample_count": b.sample_count,
+                        }
+                        for b in cal.buckets
+                    ],
+                }
+                for direction, cal in self.calibrators.items()
+            },
+        }
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "DirectionalCalibrator":
+        """Load per-direction calibrators from a JSON file."""
+        with open(path) as f:
+            data = json.load(f)
+
+        dc = cls(num_buckets=data["num_buckets"])
+        for direction, cal_data in data["calibrators"].items():
+            cal = ConfidenceCalibrator(num_buckets=cal_data["num_buckets"])
+            cal.min_samples_per_bucket = cal_data["min_samples_per_bucket"]
+            cal.is_fitted = cal_data["is_fitted"]
+            cal.buckets = [
+                CalibrationBucket(
+                    raw_min=b["raw_min"],
+                    raw_max=b["raw_max"],
+                    calibrated=b["calibrated"],
+                    sample_count=b["sample_count"],
+                )
+                for b in cal_data["buckets"]
+            ]
+            dc.calibrators[direction] = cal
+
+        return dc
+
+    @classmethod
+    def from_backtest_results(
+        cls,
+        backtest_results: list[dict],
+        horizon: int = 5,
+        num_buckets: int = 10,
+    ) -> "DirectionalCalibrator":
+        """
+        Create and fit a DirectionalCalibrator from backtest results.
+
+        Splits predictions by direction (BUY/SELL/HOLD) and fits a separate
+        calibrator for each direction that has enough samples.
+
+        Args:
+            backtest_results: List of backtest result dictionaries
+            horizon: Which prediction horizon to use for calibration
+            num_buckets: Number of calibration buckets per direction
+
+        Returns:
+            Fitted DirectionalCalibrator (fitted for whichever directions had data)
+        """
+        direction_data: dict[str, tuple[list[float], list[bool]]] = {
+            d: ([], []) for d in cls.DIRECTIONS
+        }
+
+        for result in backtest_results:
+            for daily in result.get("daily_predictions", []):
+                predictions = daily.get("predictions", {})
+                pred = predictions.get(str(horizon)) or predictions.get(horizon)
+                if pred and pred.get("is_correct") is not None:
+                    direction = pred.get("predicted_signal", "HOLD")
+                    if direction in direction_data:
+                        direction_data[direction][0].append(pred["confidence"])
+                        direction_data[direction][1].append(bool(pred["is_correct"]))
+
+        dc = cls(num_buckets=num_buckets)
+        for direction, (confidences, correct) in direction_data.items():
+            if len(confidences) >= num_buckets:
+                dc.fit(direction, np.array(confidences), np.array(correct))
+
+        if not dc.is_fitted:
+            raise ValueError(f"No direction had enough data for horizon {horizon}")
+
+        return dc

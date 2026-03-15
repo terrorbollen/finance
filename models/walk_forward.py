@@ -33,7 +33,7 @@ class WindowResult:
     val_samples: int
     val_accuracy: float
     val_loss: float
-    class_distribution: dict = field(default_factory=dict)
+    class_distribution: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass

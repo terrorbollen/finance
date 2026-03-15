@@ -58,10 +58,13 @@ Train the LSTM model. MLflow tracking is on by default.
 ```bash
 uv run python main.py train
 uv run python main.py train --epochs 100 --batch-size 64
+uv run python main.py train --interval 1h               # Train hourly model (separate checkpoint)
 uv run python main.py train --walk-forward              # Walk-forward validation
 uv run python main.py train --no-focal-loss             # Use standard cross-entropy
 uv run python main.py train --no-mlflow                 # Disable MLflow tracking
 ```
+
+Each `--interval` trains a fully independent model. See `ARCHITECTURE.md` for checkpoint paths and parameter defaults.
 
 ### `backtest <ticker>`
 Run the model on historical data day-by-day. Results are logged to MLflow automatically.
@@ -69,6 +72,7 @@ Run the model on historical data day-by-day. Results are logged to MLflow automa
 uv run python main.py backtest VOLV-B.ST
 uv run python main.py backtest VOLV-B.ST --horizons 1 3 5
 uv run python main.py backtest VOLV-B.ST --start-date 2024-01-01 --end-date 2024-12-31
+uv run python main.py backtest VOLV-B.ST --interval 1h  # Backtest the hourly model
 uv run python main.py backtest VOLV-B.ST --output results.csv
 uv run python main.py backtest VOLV-B.ST --no-mlflow    # Skip MLflow logging
 ```
@@ -134,6 +138,8 @@ Walk-forward training also creates nested child runs (one per window) under the 
 
 ## Fine-Tuning Workflow
 
+> See [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) for the full evaluation guide — holdout discipline, what makes a result trustworthy, horizon recommendations, and known limitations.
+
 The typical loop for improving the model:
 
 ### 1. Establish a baseline
@@ -178,6 +184,8 @@ Open `http://localhost:5000`, find the run in the `trading-signals` experiment, 
 ```
 finance/
 ├── main.py                     # CLI entry point
+├── ARCHITECTURE.md             # Data flow and module dependency graph
+├── INVARIANTS.md               # Rules that must always hold in the pipeline
 ├── data/
 │   ├── fetcher.py              # yfinance data retrieval
 │   └── features.py             # Technical indicators (MA, RSI, MACD, ATR, OBV...)
@@ -193,18 +201,19 @@ finance/
 └── backtesting/
     ├── backtester.py           # Day-by-day historical simulation
     ├── metrics.py              # Sharpe, Sortino, drawdown, win rate
-    └── results.py              # Result dataclasses and export
+    ├── results.py              # Result dataclasses and export
+    └── STRATEGY.md             # Evaluation guide, holdout discipline, findings
 ```
 
 ---
 
 ## Contributing / Adding Tasks
 
-Work on this project is coordinated through `AGENTS.md`, which acts as both a task board and an improvement log.
+Work on this project is coordinated through [`AGENTS.md`](AGENTS.md) (task board and module ownership) and [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md) (coding standards, testing rules, and the full workflow). Before modifying the pipeline, read [`ARCHITECTURE.md`](ARCHITECTURE.md) for data flow and [`INVARIANTS.md`](INVARIANTS.md) for rules that must not be broken.
 
 **If you're working on a task and notice something worth fixing or adding** — a bug, a missing guard, a potential improvement — add it as a new row in the relevant section of `AGENTS.md` with status `open` before moving on. Don't fix it inline; keep your scope focused and let the board track it.
 
-**If you want to pick up a task**, read `AGENTS.md` first, claim the top unclaimed item in a module no one else owns, and follow the protocol there. Run `uv run ruff check .` and `uv run mypy .` before marking anything done.
+**If you want to pick up a task**, read `AGENTS.md` and `CONTRIBUTIONS.md` first, claim the top unclaimed item in a module no one else owns, and follow the protocol there.
 
 ---
 

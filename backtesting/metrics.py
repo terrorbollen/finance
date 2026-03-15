@@ -1,8 +1,11 @@
 """Metrics calculation for backtesting results."""
 
 import math
+from datetime import date
+from typing import TypedDict
 
 import numpy as np
+from scipy import stats
 
 from backtesting.results import (
     ClassMetrics,
@@ -11,8 +14,27 @@ from backtesting.results import (
     Signal,
 )
 
+
+class TradingMetrics(TypedDict):
+    """Return type of _calculate_trading_metrics — maps directly onto HorizonMetrics fields."""
+
+    win_rate: float
+    total_return: float
+    net_total_return: float
+    sharpe_ratio: float
+    sortino_ratio: float
+    max_drawdown: float
+    calmar_ratio: float
+    trade_count: int
+    low_sample: bool
+    win_rate_pvalue: float
+    equity_curve: list[tuple[date, float]]
+
 # Maximum per-trade slippage cost as a percentage (0.5%)
 _MAX_SLIPPAGE_PCT = 0.5
+
+# Minimum trades needed for metrics to be considered reliable
+MIN_TRADES_FOR_RELIABILITY = 30
 
 
 class MetricsCalculator:
@@ -24,6 +46,7 @@ class MetricsCalculator:
         sell_threshold: float = -0.02,
         commission_pct: float = 0.001,
         slippage_factor: float = 0.0,
+        leverage: float = 1.0,
     ):
         """
         Initialize metrics calculator.
@@ -35,11 +58,15 @@ class MetricsCalculator:
             slippage_factor: Scaling constant for volume-based slippage.
                              slippage_pct = slippage_factor / sqrt(relative_volume),
                              capped at 0.5%. Set to 0 to disable.
+            leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
+                      Commission and slippage are also scaled by leverage since they apply
+                      to the full leveraged notional.
         """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.commission_pct = commission_pct
         self.slippage_factor = slippage_factor
+        self.leverage = leverage
 
     def calculate_horizon_metrics(
         self,
@@ -189,7 +216,7 @@ class MetricsCalculator:
 
         return float(mae), float(rmse)
 
-    def _calculate_trading_metrics(self, predictions: list[HorizonPrediction]) -> dict[str, float]:
+    def _calculate_trading_metrics(self, predictions: list[HorizonPrediction]) -> TradingMetrics:
         """
         Calculate simulated trading metrics including risk-adjusted returns.
 
@@ -205,16 +232,18 @@ class MetricsCalculator:
         """
         gross_returns: list[float] = []
         net_returns: list[float] = []
-        round_trip_cost = 2 * self.commission_pct * 100  # convert to percentage
+        equity_points: list[tuple[date, float]] = []  # (prediction_date, net_return)
+        # Commission and slippage apply to the full leveraged notional
+        round_trip_cost = 2 * self.commission_pct * self.leverage * 100
 
         for p in predictions:
             if p.actual_price_change is None:
                 continue
 
             if p.predicted_signal == Signal.BUY:
-                gross = p.actual_price_change
+                gross = p.actual_price_change * self.leverage
             elif p.predicted_signal == Signal.SELL:
-                gross = -p.actual_price_change
+                gross = -p.actual_price_change * self.leverage
             else:
                 continue  # HOLD: no trade
 
@@ -228,11 +257,13 @@ class MetricsCalculator:
                     self.slippage_factor / math.sqrt(rel_vol),
                     _MAX_SLIPPAGE_PCT,
                 )
-                slippage_cost = 2 * one_way_slippage  # round-trip
+                slippage_cost = 2 * one_way_slippage * self.leverage  # round-trip on notional
 
-            net_returns.append(gross - round_trip_cost - slippage_cost)
+            net = gross - round_trip_cost - slippage_cost
+            net_returns.append(net)
+            equity_points.append((p.prediction_date, net))
 
-        empty: dict[str, float] = {
+        empty: TradingMetrics = {
             "win_rate": 0.0,
             "total_return": 0.0,
             "net_total_return": 0.0,
@@ -240,21 +271,41 @@ class MetricsCalculator:
             "sortino_ratio": 0.0,
             "max_drawdown": 0.0,
             "calmar_ratio": 0.0,
+            "trade_count": 0,
+            "low_sample": True,
+            "win_rate_pvalue": 1.0,
+            "equity_curve": [],
         }
         if not gross_returns:
             return empty
 
+        trade_count = len(gross_returns)
         wins = sum(1 for r in gross_returns if r > 0)
         sharpe, sortino, max_dd, calmar = self._calculate_risk_metrics(net_returns)
 
+        # Binomial test: is win rate significantly above 50% chance?
+        pvalue = float(stats.binomtest(wins, trade_count, p=0.5, alternative="greater").pvalue)
+
+        # Build equity curve: cumulative net returns sorted chronologically
+        equity_points.sort(key=lambda x: x[0])
+        cumulative = 0.0
+        equity_curve: list[tuple[date, float]] = []
+        for dt, ret in equity_points:
+            cumulative += ret
+            equity_curve.append((dt, round(cumulative, 4)))
+
         return {
-            "win_rate": wins / len(gross_returns),
+            "win_rate": wins / trade_count,
             "total_return": float(sum(gross_returns)),
             "net_total_return": float(sum(net_returns)),
             "sharpe_ratio": sharpe,
             "sortino_ratio": sortino,
             "max_drawdown": max_dd,
             "calmar_ratio": calmar,
+            "trade_count": trade_count,
+            "low_sample": trade_count < MIN_TRADES_FOR_RELIABILITY,
+            "win_rate_pvalue": pvalue,
+            "equity_curve": equity_curve,
         }
 
     def _calculate_risk_metrics(

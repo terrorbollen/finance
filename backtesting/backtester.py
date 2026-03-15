@@ -1,6 +1,5 @@
 """Core backtesting engine."""
 
-import json
 import os
 from datetime import date
 
@@ -16,6 +15,7 @@ from backtesting.results import (
 )
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
+from models.config import ModelConfig
 from models.signal_model import SignalModel
 
 
@@ -27,21 +27,25 @@ class Backtester:
     available up to that point.
     """
 
+    _INTERVAL_PERIOD: dict[str, str] = {"1d": "5y", "1h": "2y"}
+
     def __init__(
         self,
-        model_path: str = "checkpoints/signal_model.weights.h5",
+        model_path: str | None = None,
         sequence_length: int = 20,
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
         commission_pct: float = 0.001,
         strict_holdout: bool = True,
         slippage_factor: float = 0.1,
+        interval: str = "1d",
+        leverage: float = 1.0,
     ):
         """
         Initialize the backtester.
 
         Args:
-            model_path: Path to trained model weights
+            model_path: Path to trained model weights. Defaults to interval-specific checkpoint.
             sequence_length: Sequence length used during training
             buy_threshold: Price change threshold for BUY signal
             sell_threshold: Price change threshold for SELL signal
@@ -52,8 +56,12 @@ class Backtester:
             slippage_factor: Scaling constant for volume-based slippage model.
                              slippage_pct = slippage_factor / sqrt(relative_volume),
                              capped at 0.5% per trade. Set to 0 to disable slippage.
+            interval: Data interval used during training — "1d" or "1h".
+            leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
         """
-        self.model_path = model_path
+        self.interval = interval
+        suffix = "" if interval == "1d" else f"_{interval}"
+        self.model_path = model_path or f"checkpoints/signal_model{suffix}.weights.h5"
         self.sequence_length = sequence_length
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -72,25 +80,24 @@ class Backtester:
             sell_threshold=sell_threshold,
             commission_pct=commission_pct,
             slippage_factor=slippage_factor,
+            leverage=leverage,
         )
 
         self._load_config()
 
-    def _load_config(self):
-        """Load training configuration from file."""
+    def _load_config(self) -> None:
+        """Load and validate training configuration from file."""
         config_path = self.model_path.replace(".weights.h5", "_config.json")
         if os.path.exists(config_path):
-            with open(config_path) as f:
-                config = json.load(f)
-            self.feature_columns = config.get("feature_columns")
-            self.feature_mean = np.array(config.get("feature_mean"))
-            self.feature_std = np.array(config.get("feature_std"))
-            self.sequence_length = config.get("sequence_length", self.sequence_length)
-            self.input_dim = config.get("input_dim")
-            if "holdout_start_date" in config:
-                self.holdout_start_date = date.fromisoformat(config["holdout_start_date"])
+            cfg = ModelConfig.load(config_path)
+            self.feature_columns = cfg.feature_columns
+            self.feature_mean = cfg.feature_mean_array
+            self.feature_std = cfg.feature_std_array
+            self.sequence_length = cfg.sequence_length
+            self.input_dim = cfg.input_dim
+            self.holdout_start_date = cfg.holdout_start_date
 
-    def _load_model(self, input_dim: int):
+    def _load_model(self, input_dim: int) -> None:
         """Load the trained model."""
         self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
         try:
@@ -119,11 +126,13 @@ class Backtester:
             BacktestResult with all predictions and metrics
         """
         # Fetch full history
-        fetcher = StockDataFetcher(period="5y")
+        period = self._INTERVAL_PERIOD.get(self.interval, "5y")
+        fetcher = StockDataFetcher(period=period, interval=self.interval)
         df_raw = fetcher.fetch(ticker)
 
-        # Add features
-        engineer = FeatureEngineer(df_raw)
+        # Add features (including cross-asset reference data)
+        ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df_raw.index))
+        engineer = FeatureEngineer(df_raw, reference_data=ref_data)
         df = engineer.add_all_features()
 
         # Get feature columns
@@ -228,6 +237,7 @@ class Backtester:
             end_date=end_date,
             trading_days=len(backtest_indices),
             buy_hold_return=buy_hold_return,
+            leverage=self.metrics_calculator.leverage,
             daily_predictions=daily_predictions,
             horizon_metrics=horizon_metrics,
         )

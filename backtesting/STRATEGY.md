@@ -1,0 +1,154 @@
+# Backtesting & Evaluation Strategy
+
+This document describes how we validate the trading signal model, how to interpret results, and what we've learned from evaluation runs.
+
+---
+
+## Pipeline
+
+Every evaluation follows this order — skipping steps leads to misleading numbers.
+
+```bash
+# 1. Train on non-holdout data
+uv run python main.py train
+
+# 2. Fit confidence calibrator on holdout data
+uv run python main.py calibrate
+
+# 3. Backtest on the holdout period
+uv run python main.py backtest <TICKER> --start-date <HOLDOUT_DATE>
+```
+
+The holdout start date is printed in the model config after training:
+```bash
+python3 -c "import json; c=json.load(open('checkpoints/signal_model_config.json')); print(c['holdout_start_date'])"
+```
+
+---
+
+## Holdout Discipline
+
+The model enforces a strict temporal holdout:
+
+- Training data is split 70% train / 15% val / 15% test
+- The `holdout_start_date` in the model config records the exact last date seen during training+validation
+- The backtester automatically refuses to run before this date
+- **Never pass `--no-strict-holdout`** unless explicitly debugging on training data
+
+The holdout boundary is derived from the actual data split, not a fixed calendar date. It shifts when the training dataset changes.
+
+---
+
+## Ticker Scope
+
+The model is trained on a fixed universe (currently 11 Swedish large-caps). **It only works on tickers it was trained on** — on unseen tickers it predicts pure HOLD and makes zero trades. This is an accepted limitation; the model learns ticker-specific statistical patterns, not fully general ones.
+
+To add a ticker to the universe: include it in the training list and retrain.
+
+Current universe: `^OMX`, `VOLV-B.ST`, `ERIC-B.ST`, `HM-B.ST`, `SEB-A.ST`, `ATCO-A.ST`, `INVE-B.ST`, `NDA-SE.ST`, `SWED-A.ST`, `SAND.ST`, `ABB.ST`
+
+---
+
+## What Makes a Result Trustworthy
+
+A backtest result should satisfy all of the following before being trusted:
+
+| Criterion | Threshold | Why |
+|---|---|---|
+| Trade count | ≥ 30 trades | Below this the win rate is noise; marked with ⚠ |
+| Win rate significance | p < 0.05 (`*`) ideally p < 0.01 (`**`) | One-sided binomial test vs 50% |
+| Consistent across tickers | ≥ 3 stocks from the trained universe | Avoids cherry-picking a lucky ticker |
+| Net return > 0 | After commission + slippage | Gross return is irrelevant if costs kill it |
+| Both directions working | BUY and SELL recall > 0 | A model that only goes long is not a signal model |
+
+If a result doesn't meet all of these, treat it as preliminary.
+
+---
+
+## Horizon Guide
+
+The model predicts across 1–7 day horizons. Based on evaluation runs, use this as a guide:
+
+| Horizon | Reliability | Notes |
+|---|---|---|
+| 1-day | Low | Net returns often negative after costs; high trade frequency |
+| 2-day | Marginal | Borderline significance; use with caution |
+| 3-day | Good | Statistically significant across tickers |
+| 4–5-day | Strong | Recommended for live signals |
+| 6–7-day | Best accuracy | Highest win rates and Sharpe; fewer trades reduces cost drag |
+
+**Default recommendation: use 5-day horizon for live signals.**
+
+---
+
+## Multi-Ticker Validation
+
+Never judge the model on a single ticker. Swedish large-caps move together in bull runs, so a good result on one might just reflect the market trend.
+
+Evaluate on tickers with different market behaviour over the holdout period:
+
+- A stock in a strong uptrend (tests BUY accuracy)
+- A flat or sideways stock (tests both directions)
+- A declining stock (tests SELL accuracy)
+
+The model is only credible if it beats buy & hold **and** shows positive SELL recall on at least one stock.
+
+---
+
+## Reading the Output
+
+```
+Horizon    Trades     Win Rate       Gross Ret    Net Ret      Sharpe   Max DD     Calmar
+5-day      67         79.1%**        +245.37%     +218.08%     11.33    -5.8%      37.75
+```
+
+| Column | Meaning |
+|---|---|
+| **Trades** | BUY + SELL trades taken (HOLD excluded) |
+| **Win Rate** | % of trades with positive gross return. `**` = p<0.01, `*` = p<0.05, ⚠ = <30 trades |
+| **Gross Ret** | Cumulative price moves before costs |
+| **Net Ret** | After round-trip commission (0.1%) and slippage |
+| **Sharpe** | Annualised on per-trade returns (√252 scaling) |
+| **Max DD** | Worst peak-to-trough drawdown in cumulative net returns |
+| **Calmar** | Net return / |Max DD|; higher is better |
+
+---
+
+## Confidence Calibration
+
+Raw softmax probabilities are poorly calibrated (higher confidence ≠ higher accuracy). After training, always run `calibrate` to fit the isotonic regression calibrator.
+
+The calibration display in the backtest shows raw bucket accuracy, not the calibrated output used during trading. The calibrator is loaded automatically from `checkpoints/calibration.json`.
+
+Recalibrate whenever you retrain the model.
+
+---
+
+## Evaluation Findings (March 2026)
+
+Holdout period: 2025-09-17 to 2026-03-14 (122 trading days)
+Model features: 37 (technical, market regime, cross-asset, calendar)
+
+| Ticker | B&H Return | Net Ret (7d) | Win Rate (7d) | Notes |
+|---|---|---|---|---|
+| ERIC-B.ST | +48.3% | +293% | 91%** | Strong bull run |
+| HM-B.ST | +19.1% | +307% | 97.5%** | Mixed market |
+| VOLV-B.ST | +17.8% | +256% | 95%** | Mild uptrend |
+| SEB-A.ST | +0.7% | +128% | 94.5%** | Flat — most convincing |
+
+Key observations:
+- 5-7 day horizons are consistently profitable across all market conditions
+- 1-day horizon is unreliable (negative net on 2/4 tickers)
+- SELL signal is weakest — the model is more confident going long
+- 122 days is a short window; results need validation over a full market cycle
+
+---
+
+## Known Limitations
+
+- **Short holdout**: 122 days is not a full market cycle. Results haven't been tested through a sustained bear market.
+- **SELL bias**: BUY recall is consistently higher than SELL recall. The model is better at identifying upside.
+- **Single model**: No ensemble. One unlucky training run can produce a bad model.
+- **Calibration**: The calibrator is fitted on the same tickers used for backtesting. Confidence scores are directionally correct but not perfectly out-of-sample.
+- **Ticker scope**: Only works on tickers in the trained universe. Predicts pure HOLD on any unseen ticker. To add a ticker, retrain with it included.
+- **Correlated tickers**: All tickers are Swedish large-caps with high mutual correlation. A broader multi-market test would be more robust.

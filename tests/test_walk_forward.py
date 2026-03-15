@@ -38,7 +38,7 @@ class TestZeroGapBackwardCompatibility:
         t = _trainer(purge_gap=0, embargo_gap=0)
         windows = t.generate_windows(n_samples=300)
         assert windows, "Expected at least one window"
-        for train_start, train_end, val_start, val_end in windows:
+        for _train_start, train_end, val_start, _val_end in windows:
             assert val_start == train_end, (
                 f"With zero purge_gap, val_start ({val_start}) should equal "
                 f"train_end ({train_end})"
@@ -59,7 +59,7 @@ class TestZeroGapBackwardCompatibility:
         validation_days = 40
         t = _trainer(validation_days=validation_days, purge_gap=0, embargo_gap=0)
         windows = t.generate_windows(n_samples=300)
-        for train_start, train_end, val_start, val_end in windows:
+        for _train_start, _train_end, val_start, val_end in windows:
             assert val_end - val_start == validation_days
 
 
@@ -100,7 +100,7 @@ class TestPurgeGap:
         t = _trainer(validation_days=validation_days, purge_gap=purge, embargo_gap=0)
         windows = t.generate_windows(n_samples=400)
         assert windows
-        for train_start, train_end, val_start, val_end in windows:
+        for _train_start, train_end, val_start, val_end in windows:
             # The gap is between train_end and val_start
             assert val_start - train_end == purge, (
                 f"Gap between train_end ({train_end}) and val_start "

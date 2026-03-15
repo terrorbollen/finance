@@ -6,13 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When running as one of several parallel agents, follow this protocol before doing any work:
 
-1. **Read `AGENTS.md`** — it is the task board and module ownership map.
+1. **Read `AGENTS.md`** — it is the task board and module ownership map. Read `CONTRIBUTIONS.md` for the full coding and workflow guidelines.
 2. **Claim a task** — edit the **Claimed by** cell for your chosen task to your agent name (e.g. `Agent-1`). Pick the highest-priority unclaimed task in a module no other agent currently owns.
 3. **Stay in scope** — only edit files listed in your task's **Scope** column. Do not touch `main.py` or other modules unless your task explicitly lists them.
 4. **Mark done** — update the task **Status** to `done` when finished.
 5. **Release the module** — clear the **Current owner** entry in the Module Ownership Map when done.
+6. **Update CHANGELOG.md** — add an entry describing what changed and why.
 
 > If two agents accidentally pick the same module, the one that claimed it later should back off and choose a different task.
+
+## Key documents
+
+| Document | Purpose |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Task board and module ownership map |
+| [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md) | Full coding standards, testing rules, workflow |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Data flow, stage-by-stage details, module dependency graph |
+| [`INVARIANTS.md`](INVARIANTS.md) | Rules that must always hold — read before touching the pipeline |
+| [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) | Holdout discipline, output interpretation, horizon guide |
+| [`CHANGELOG.md`](CHANGELOG.md) | History of completed changes |
 
 ## Philosophy
 
@@ -109,13 +121,15 @@ The code auto-connects via the `MLFLOW_TRACKING_URI` env var (set in `docker-com
 
 ### What is logged per run type
 
-| `run_type` | Logged by | Params | Metrics |
-|---|---|---|---|
-| `standard` | `train` | sequence_length, thresholds, epochs, batch_size, num_tickers | test_signal_accuracy, test_loss, test_price_mae (+ per-epoch) |
-| `walk-forward` | `train --walk-forward` | window sizes, thresholds, epochs | mean/std/best/worst val_accuracy; nested child run per window |
-| `backtest` | `backtest` | ticker, date range, commission | h{N}.accuracy, h{N}.win_rate, h{N}.net_return, h{N}.sharpe, h{N}.max_drawdown per horizon |
+| `run_type` | Logged by | Params | Metrics | Tags |
+|---|---|---|---|---|
+| `standard` | `train` | sequence_length, thresholds, epochs, batch_size, num_tickers, class_pct_buy/sell/hold | test_signal_accuracy, test_loss, test_price_mae (+ per-epoch via Keras autolog) | run_type, tickers, holdout_start_date, cli.* |
+| `walk-forward` | `train --walk-forward` | window sizes, thresholds, epochs, purge_gap, embargo_gap | mean/std/best/worst val_accuracy; nested child run per window | run_type, tickers, holdout_start_date, cli.* |
+| `backtest` | `backtest` | ticker, date range, commission, trading_days, buy_hold_return | h{N}.accuracy, h{N}.win_rate, h{N}.net_return, h{N}.sharpe, h{N}.sortino, h{N}.max_drawdown, h{N}.calmar, h{N}.price_mae, h{N}.trade_count, h{N}.win_rate_pvalue, h{N}.buy/sell/hold_precision/recall/support | run_type, ticker |
 
 CLI args are always logged as `cli.*` tags (e.g. `cli.epochs`, `cli.tickers`) so every run is fully reproducible from its MLflow record.
+
+**Keras autologging** is enabled for standard and walk-forward training runs (`mlflow.keras.autolog()`). It automatically captures all Keras training metrics per epoch, model summary, and system metrics. The manual `log_training_history` call is kept alongside for backwards compatibility.
 
 ### Querying runs
 `models/mlflow_tracking.py` exposes:
@@ -130,6 +144,10 @@ uv run python main.py history                          # last 20 backtests
 uv run python main.py history --ticker VOLV-B.ST       # filter by ticker
 uv run python main.py history --type standard          # training runs
 ```
+
+## Backtest Output Guide
+
+See [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) for the full guide: column definitions, statistical significance rules, equity curve export, horizon recommendations, and what makes a result trustworthy before acting on it.
 
 ## Dependencies
 

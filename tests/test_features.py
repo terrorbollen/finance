@@ -183,7 +183,7 @@ class TestCrossAssetFeatures:
 
     def test_cross_asset_columns_present_with_data(self, sample_ohlcv_data: pd.DataFrame):
         """All three cross-asset columns should exist when reference data is supplied."""
-        idx = sample_ohlcv_data.index
+        idx = pd.DatetimeIndex(sample_ohlcv_data.index)
         ref = {
             "omxs30": self._make_ref_df(idx, seed=1),
             "usdsek": self._make_ref_df(idx, seed=2),
@@ -203,7 +203,7 @@ class TestCrossAssetFeatures:
 
     def test_no_nan_in_cross_asset_columns(self, sample_ohlcv_data: pd.DataFrame):
         """Cross-asset columns must not contain NaN after the method runs."""
-        idx = sample_ohlcv_data.index
+        idx = pd.DatetimeIndex(sample_ohlcv_data.index)
         ref = {
             "omxs30": self._make_ref_df(idx, seed=1),
             "usdsek": self._make_ref_df(idx, seed=2),
@@ -217,7 +217,7 @@ class TestCrossAssetFeatures:
 
     def test_omxs30_corr_range(self, sample_ohlcv_data: pd.DataFrame):
         """Correlation must be in [-1, 1]."""
-        idx = sample_ohlcv_data.index
+        idx = pd.DatetimeIndex(sample_ohlcv_data.index)
         ref = {"omxs30": self._make_ref_df(idx, seed=10)}
         eng = FeatureEngineer(sample_ohlcv_data, reference_data=ref)
         eng.add_price_features()

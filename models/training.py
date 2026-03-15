@@ -1,9 +1,9 @@
 """Training pipeline for the signal model."""
 
-import json
 import os
 from datetime import date
 
+import mlflow
 import numpy as np
 import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
@@ -11,6 +11,7 @@ from tensorflow import keras
 
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
+from models.config import ModelConfig
 from models.mlflow_tracking import (
     log_hyperparameters,
     log_metrics,
@@ -25,50 +26,67 @@ from models.signal_model import SignalModel, create_sequences
 class ModelTrainer:
     """Handles model training with time-series aware data splitting."""
 
+    # Bars per trading day and data fetch period per interval.
+    # Stockholm exchange trades ~7 hours/day on Yahoo Finance hourly data.
+    _INTERVAL_BARS_PER_DAY: dict[str, int] = {"1d": 1, "1h": 7}
+    _INTERVAL_PERIOD: dict[str, str] = {"1d": "5y", "1h": "2y"}
+
     def __init__(
         self,
-        sequence_length: int = 20,
+        sequence_length: int | None = None,
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
-        prediction_horizon: int = 5,
-        buy_threshold: float = 0.015,  # Lowered from 0.02 to get more BUY signals
-        sell_threshold: float = -0.015,  # Raised from -0.02 to get more SELL signals
-        use_adaptive_thresholds: bool = True,  # Adapt thresholds to volatility
+        prediction_horizon: int | None = None,
+        buy_threshold: float = 0.015,
+        sell_threshold: float = -0.015,
+        use_adaptive_thresholds: bool = True,
+        interval: str = "1d",
     ):
         """
         Initialize the trainer.
 
         Args:
-            sequence_length: Number of time steps for LSTM input
+            sequence_length: LSTM lookback window (bars). Defaults to 20 days worth of bars.
             train_ratio: Proportion of data for training
             val_ratio: Proportion of data for validation (rest is test)
-            prediction_horizon: Days ahead to predict for price target
-            buy_threshold: Min % gain to label as Buy (default lowered for balance)
-            sell_threshold: Max % loss to label as Sell (default raised for balance)
+            prediction_horizon: Bars ahead to predict. Defaults to 5 days worth of bars.
+            buy_threshold: Min % gain to label as Buy
+            sell_threshold: Max % loss to label as Sell
             use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
+            interval: Data interval — "1d" (daily) or "1h" (hourly)
         """
-        self.sequence_length = sequence_length
+        self.interval = interval
+        bars = self._INTERVAL_BARS_PER_DAY.get(interval, 1)
+        self.sequence_length = sequence_length if sequence_length is not None else 20 * bars
+        self.prediction_horizon = prediction_horizon if prediction_horizon is not None else 5 * bars
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
-        self.prediction_horizon = prediction_horizon
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.use_adaptive_thresholds = use_adaptive_thresholds
         self.model: SignalModel | None = None
         self.feature_columns: list[str] = []
+        # Set by prepare_data(); declared here so the object's full shape is visible
+        self.feature_mean: np.ndarray | None = None
+        self.feature_std: np.ndarray | None = None
 
-    def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def prepare_data(
+        self,
+        df: pd.DataFrame,
+        reference_data: dict[str, pd.DataFrame] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DatetimeIndex]:
         """
         Prepare features and labels from raw price data.
 
         Args:
             df: DataFrame with OHLCV data
+            reference_data: Optional cross-asset reference data for F2 features.
 
         Returns:
-            Tuple of (features, labels, price_changes)
+            Tuple of (features, labels, price_changes, date_index)
         """
         # Add technical indicators
-        engineer = FeatureEngineer(df)
+        engineer = FeatureEngineer(df, reference_data=reference_data)
         df_features = engineer.add_all_features()
 
         # Store feature columns BEFORE adding labels
@@ -104,18 +122,19 @@ class ModelTrainer:
         features = df_features[self.feature_columns].values
         labels = df_features["label"].to_numpy().astype(int)
         price_changes = df_features["future_return"].to_numpy() * 100  # As percentage
+        date_index = pd.DatetimeIndex(df_features.index)
 
         # Replace any inf values with large finite values, then clip
         features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
 
-        return features, labels, price_changes
+        return features, labels, price_changes, date_index
 
     def train(
         self,
         tickers: list[str],
         epochs: int = 50,
         batch_size: int = 32,
-        model_path: str = "checkpoints/signal_model.weights.h5",
+        model_path: str | None = None,
         use_focal_loss: bool = True,
         track_with_mlflow: bool = True,
         tags: dict[str, str] | None = None,
@@ -133,21 +152,34 @@ class ModelTrainer:
         Returns:
             Dictionary with training history and metrics
         """
+        # Resolve model path based on interval if not explicitly provided
+        suffix = "" if self.interval == "1d" else f"_{self.interval}"
+        if model_path is None:
+            model_path = f"checkpoints/signal_model{suffix}.weights.h5"
+
         # Setup MLflow tracking if enabled
         if track_with_mlflow:
             setup_mlflow()
 
         # Fetch and combine data from all tickers
-        fetcher = StockDataFetcher(period="5y")
-        all_features, all_labels, all_prices = [], [], []
+        period = self._INTERVAL_PERIOD.get(self.interval, "5y")
+        fetcher = StockDataFetcher(period=period, interval=self.interval)
+        all_features, all_labels, all_prices, all_dates = [], [], [], []
 
+        loaded_tickers: list[str] = []
         for ticker in tickers:
             try:
                 df = fetcher.fetch(ticker)
-                features, labels, prices = self.prepare_data(df)
+                ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
+                features, labels, prices, dates = self.prepare_data(df, reference_data=ref_data)
+                if len(features) == 0:
+                    print(f"Skipping {ticker}: no usable samples")
+                    continue
                 all_features.append(features)
                 all_labels.append(labels)
                 all_prices.append(prices)
+                all_dates.append(dates)
+                loaded_tickers.append(ticker)
                 print(f"Loaded {len(features)} samples from {ticker}")
             except Exception as e:
                 print(f"Error loading {ticker}: {e}")
@@ -156,9 +188,19 @@ class ModelTrainer:
             raise ValueError("No data loaded for training")
 
         # Combine all data
+        print(f"\nCombining data from {len(all_features)} tickers...")
         features = np.vstack(all_features)
         labels = np.concatenate(all_labels)
         prices = np.concatenate(all_prices)
+        print(f"Total samples: {len(features):,}  |  Features: {features.shape[1]}")
+
+        # Compute the actual holdout start: the latest calendar date that appears
+        # in any ticker's training or validation split.  We look at each ticker's
+        # date index independently so that the split index maps cleanly to a date.
+        latest_val_date = max(
+            dates[min(int(len(dates) * (self.train_ratio + self.val_ratio)), len(dates) - 1)]
+            for dates in all_dates
+        )
 
         # Print class distribution BEFORE training
         unique, counts = np.unique(labels, return_counts=True)
@@ -175,6 +217,7 @@ class ModelTrainer:
         # Normalize features using training data only to avoid look-ahead bias.
         # Compute the raw-feature index where training ends so we don't include
         # val/test statistics in the mean/std.
+        print("Normalizing features...")
         n_sequences = len(features) - self.sequence_length + 1
         train_end_raw = int(n_sequences * self.train_ratio) + self.sequence_length - 1
         train_end_raw = min(train_end_raw, len(features))
@@ -186,7 +229,9 @@ class ModelTrainer:
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Create sequences
+        print(f"Creating sequences (length={self.sequence_length}, ~{n_sequences:,} sequences)...")
         X, y_signal, y_price = create_sequences(features, labels, prices, self.sequence_length)
+        print(f"Sequences created: {len(X):,}")
 
         # Compute class weights to handle imbalance
         class_weights = compute_class_weight(
@@ -290,24 +335,19 @@ class ModelTrainer:
             # Save training config for inference
             config_path = model_path.replace(".weights.h5", "_config.json")
 
-            # Approximate holdout start: data fetched over data_period_years ending today;
-            # holdout covers the last (1 - train_ratio - val_ratio) fraction of that period.
-            data_period_years = 5
-            holdout_fraction = 1.0 - self.train_ratio - self.val_ratio
-            holdout_days = int(holdout_fraction * data_period_years * 365)
-            holdout_start = date.today() - pd.Timedelta(days=holdout_days)
-
-            config = {
-                "feature_columns": self.feature_columns,
-                "feature_mean": self.feature_mean.tolist(),
-                "feature_std": self.feature_std.tolist(),
-                "sequence_length": self.sequence_length,
-                "input_dim": input_dim,
-                "training_fetch_date": date.today().isoformat(),
-                "holdout_start_date": holdout_start.date().isoformat(),
-            }
-            with open(config_path, "w") as f:
-                json.dump(config, f)
+            assert self.feature_mean is not None, "prepare_data() must be called before training"
+            assert self.feature_std is not None, "prepare_data() must be called before training"
+            cfg = ModelConfig(
+                feature_columns=self.feature_columns,
+                feature_mean=self.feature_mean.tolist(),
+                feature_std=self.feature_std.tolist(),
+                sequence_length=self.sequence_length,
+                input_dim=input_dim,
+                interval=self.interval,
+                training_fetch_date=date.today(),
+                holdout_start_date=pd.Timestamp(latest_val_date).date(),
+            )
+            cfg.save(config_path)
             print(f"Saved model config to {config_path}")
 
             return history, test_results, config_path
@@ -318,11 +358,28 @@ class ModelTrainer:
             if len(tickers) > 3:
                 run_name += f"-+{len(tickers) - 3}"
 
-            run_tags = {"tickers": ",".join(tickers), "run_type": "standard"}
+            holdout_date_str = pd.Timestamp(latest_val_date).date().isoformat()
+            run_tags = {
+                "tickers": ",".join(tickers),
+                "run_type": "standard",
+                "holdout_start_date": holdout_date_str,
+            }
             if tags:
                 run_tags.update(tags)
 
+            # Keras autolog captures all training metrics automatically.
+            # log_every_n_steps=1 matches our existing per-epoch manual logging.
+            mlflow.keras.autolog(log_every_n_steps=1, silent=True)
+
             with training_run(run_name=run_name, tags=run_tags):
+                # Build class distribution params for logging
+                label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
+                unique, counts = np.unique(labels, return_counts=True)
+                class_dist = {
+                    f"class_pct_{label_names.get(int(u), str(u)).lower()}": float(c / len(labels))
+                    for u, c in zip(unique, counts, strict=False)
+                }
+
                 # Log hyperparameters
                 log_hyperparameters(
                     {
@@ -341,12 +398,13 @@ class ModelTrainer:
                         "val_samples": len(X_val),
                         "test_samples": len(X_test),
                         "input_dim": input_dim,
+                        **class_dist,
                     }
                 )
 
                 history, test_results, config_path = _do_training()
 
-                # Log training history per epoch
+                # Log training history per epoch (kept alongside autolog)
                 log_training_history(history.history)
 
                 # Log final test metrics
@@ -369,4 +427,5 @@ class ModelTrainer:
             "test_loss": test_results["loss"],
             "test_signal_accuracy": test_results["signal_accuracy"],
             "test_price_mae": test_results["price_target_mae"],
+            "loaded_tickers": loaded_tickers,
         }

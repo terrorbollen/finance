@@ -6,6 +6,7 @@ import sys
 from datetime import UTC, datetime
 
 from backtesting import Backtester
+from backtesting.results import Signal
 from data.fetcher import StockDataFetcher
 from models.mlflow_tracking import (
     get_recent_runs,
@@ -107,7 +108,7 @@ def cmd_train(args):
             print("\n" + results.summary())
         else:
             # Standard training
-            trainer = ModelTrainer()
+            trainer = ModelTrainer(interval=args.interval)
             results = trainer.train(
                 tickers=tickers,
                 epochs=args.epochs,
@@ -118,6 +119,16 @@ def cmd_train(args):
             )
             print("\nTraining complete!")
             print(f"Final test accuracy: {results['test_signal_accuracy']:.4f}")
+
+            # Auto-calibrate unless opted out
+            if not args.no_calibrate:
+                suffix = "" if args.interval == "1d" else f"_{args.interval}"
+                _run_calibration(
+                    tickers=results["loaded_tickers"],
+                    horizon=5,
+                    output_path=f"checkpoints/calibration{suffix}.json",
+                    interval=args.interval,
+                )
     except Exception as e:
         print(f"Training error: {e}")
         sys.exit(1)
@@ -136,6 +147,46 @@ def cmd_list(args):
         print(f"{alias:<20} {symbol:<20}")
 
 
+def _run_leverage_comparison(args, start_date, end_date, horizons):
+    """Run backtest at 1x, 2x, 3x leverage and print a comparison table."""
+    leverages = [1.0, 2.0, 3.0]
+    results = []
+    for lev in leverages:
+        backtester = Backtester(
+            commission_pct=args.commission,
+            strict_holdout=not args.no_strict_holdout,
+            interval=args.interval,
+            leverage=lev,
+        )
+        result = backtester.run(
+            ticker=args.ticker,
+            start_date=start_date,
+            end_date=end_date,
+            horizons=horizons,
+        )
+        results.append((lev, result))
+
+    # Print comparison table per horizon
+    print(f"\n{'=' * 80}")
+    print(f"  LEVERAGE COMPARISON: {args.ticker}")
+    print(f"{'=' * 80}")
+    for horizon in sorted(horizons):
+        print(f"\n  Horizon {horizon}d")
+        print(f"  {'Leverage':<12} {'Net Ret%':<12} {'Sharpe':<10} {'Max DD%':<12} {'Win Rate':<12} {'Trades'}")
+        print(f"  {'-' * 68}")
+        for lev, result in results:
+            m = result.horizon_metrics.get(horizon)
+            if m is None:
+                continue
+            low = " ⚠" if m.low_sample else ""
+            print(
+                f"  {lev:.0f}x{'':<9} {m.net_total_return:+.2f}%{'':<5} "
+                f"{m.sharpe_ratio:.2f}{'':<6} {m.max_drawdown:+.1f}%{'':<6} "
+                f"{m.win_rate * 100:.1f}%{'':<6} {m.trade_count}{low}"
+            )
+    print(f"\n{'=' * 80}")
+
+
 def cmd_backtest(args):
     """Run backtesting on historical data."""
     print(f"\nBacktesting {args.ticker}...")
@@ -151,9 +202,16 @@ def cmd_backtest(args):
     # Parse horizons
     horizons = args.horizons if args.horizons else [1, 2, 3, 4, 5, 6, 7]
 
+    # --compare-leverage: run 1x/2x/3x and print a comparison table, then exit
+    if args.compare_leverage:
+        _run_leverage_comparison(args, start_date, end_date, horizons)
+        return
+
     backtester = Backtester(
         commission_pct=args.commission,
         strict_holdout=not args.no_strict_holdout,
+        interval=args.interval,
+        leverage=args.leverage,
     )
     try:
         result = backtester.run(
@@ -188,18 +246,28 @@ def cmd_backtest(args):
                 )
                 # Log per-horizon metrics with horizon prefix
                 for h, m in result.horizon_metrics.items():
-                    log_metrics(
-                        {
-                            f"h{h}.accuracy": m.accuracy,
-                            f"h{h}.win_rate": m.win_rate,
-                            f"h{h}.net_return": m.net_total_return,
-                            f"h{h}.sharpe": m.sharpe_ratio,
-                            f"h{h}.sortino": m.sortino_ratio,
-                            f"h{h}.max_drawdown": m.max_drawdown,
-                            f"h{h}.calmar": m.calmar_ratio,
-                            f"h{h}.price_mae": m.price_mae,
-                        }
-                    )
+                    metrics: dict = {
+                        f"h{h}.accuracy": m.accuracy,
+                        f"h{h}.win_rate": m.win_rate,
+                        f"h{h}.net_return": m.net_total_return,
+                        f"h{h}.sharpe": m.sharpe_ratio,
+                        f"h{h}.sortino": m.sortino_ratio,
+                        f"h{h}.max_drawdown": m.max_drawdown,
+                        f"h{h}.calmar": m.calmar_ratio,
+                        f"h{h}.price_mae": m.price_mae,
+                        # Reliability / significance
+                        f"h{h}.trade_count": m.trade_count,
+                        f"h{h}.win_rate_pvalue": m.win_rate_pvalue,
+                    }
+                    # Per-class precision and recall
+                    for sig in Signal:
+                        cm = m.class_metrics.get(sig)
+                        if cm:
+                            key = sig.name.lower()
+                            metrics[f"h{h}.{key}_precision"] = cm.precision
+                            metrics[f"h{h}.{key}_recall"] = cm.recall
+                            metrics[f"h{h}.{key}_support"] = cm.support
+                    log_metrics(metrics)
             print("\nResults logged to MLflow.")
 
         # Export if requested
@@ -267,60 +335,70 @@ def cmd_history(args):
             print(f"{dt:<22} {name:<40} {acc:>8.4f} {loss:>9.4f}")
 
 
-def cmd_calibrate(args):
-    """Train confidence calibrator from backtest results."""
+def _run_calibration(
+    tickers: list[str],
+    horizon: int,
+    output_path: str,
+    interval: str = "1d",
+    num_buckets: int = 10,
+) -> bool:
+    """
+    Run backtests on tickers and fit a confidence calibrator.
+
+    Returns True if calibration succeeded, False otherwise.
+    """
     import numpy as np
 
-    tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
-
-    print(f"\nCalibrating confidence using {len(tickers)} tickers...")
-    print(f"Horizon: {args.horizon} days")
+    print(f"\nCalibrating confidence using {len(tickers)} tickers (horizon={horizon}d)...")
     print("-" * 50)
 
-    # Collect backtest results
     all_confidences = []
     all_correct = []
 
-    backtester = Backtester()
+    backtester = Backtester(interval=interval)
 
     for ticker in tickers:
         try:
-            print(f"Backtesting {ticker}...")
-            result = backtester.run(
-                ticker=ticker,
-                horizons=[args.horizon],
-            )
-
-            # Extract confidence and correctness
+            print(f"  Backtesting {ticker}...")
+            result = backtester.run(ticker=ticker, horizons=[horizon])
             for daily in result.daily_predictions:
-                pred = daily.predictions.get(args.horizon)
+                pred = daily.predictions.get(horizon)
                 if pred and pred.is_correct is not None:
                     all_confidences.append(pred.confidence)
                     all_correct.append(pred.is_correct)
-
         except Exception as e:
             print(f"  Warning: Could not backtest {ticker}: {e}")
 
     if len(all_confidences) < 100:
-        print(f"\nError: Not enough data points ({len(all_confidences)}). Need at least 100.")
-        sys.exit(1)
+        print(f"  Not enough data ({len(all_confidences)} predictions). Skipping calibration.")
+        return False
 
-    print(f"\nCollected {len(all_confidences)} predictions")
+    print(f"  Collected {len(all_confidences)} predictions")
 
-    # Fit calibrator
-    calibrator = ConfidenceCalibrator(num_buckets=args.buckets)
-    calibrator.fit(
-        np.array(all_confidences),
-        np.array(all_correct),
-    )
-
-    # Display calibration table
+    calibrator = ConfidenceCalibrator(num_buckets=num_buckets)
+    calibrator.fit(np.array(all_confidences), np.array(all_correct))
     print("\n" + calibrator.get_calibration_table())
-
-    # Save calibrator
-    output_path = args.output or "checkpoints/calibration.json"
     calibrator.save(output_path)
-    print(f"\nCalibration saved to {output_path}")
+    print(f"  Calibration saved to {output_path}")
+    return True
+
+
+def cmd_calibrate(args):
+    """Train confidence calibrator from backtest results."""
+    tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
+    interval = getattr(args, "interval", "1d")
+    suffix = "" if interval == "1d" else f"_{interval}"
+    output_path = args.output or f"checkpoints/calibration{suffix}.json"
+
+    ok = _run_calibration(
+        tickers=tickers,
+        horizon=args.horizon,
+        output_path=output_path,
+        interval=interval,
+        num_buckets=args.buckets,
+    )
+    if not ok:
+        sys.exit(1)
 
 
 def main():
@@ -399,6 +477,19 @@ Examples:
     train_parser.add_argument(
         "--no-mlflow", action="store_true", help="Disable MLflow experiment tracking"
     )
+    train_parser.add_argument(
+        "--interval",
+        default="1d",
+        choices=["1d", "1h"],
+        help="Data interval: '1d' (daily, default) or '1h' (hourly). "
+             "Each interval trains a separate model.",
+    )
+    train_parser.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        dest="no_calibrate",
+        help="Skip automatic confidence calibration after training.",
+    )
     train_parser.set_defaults(func=cmd_train)
 
     # list command
@@ -445,6 +536,24 @@ Examples:
         dest="no_strict_holdout",
         help="Allow backtest to overlap with training data (not recommended — disables the "
              "look-ahead bias guard)",
+    )
+    backtest_parser.add_argument(
+        "--interval",
+        default="1d",
+        choices=["1d", "1h"],
+        help="Data interval matching the trained model: '1d' (daily, default) or '1h' (hourly).",
+    )
+    backtest_parser.add_argument(
+        "--leverage",
+        type=float,
+        default=1.0,
+        help="Leverage multiplier applied to each trade (default: 1.0 = no leverage).",
+    )
+    backtest_parser.add_argument(
+        "--compare-leverage",
+        action="store_true",
+        dest="compare_leverage",
+        help="Run backtest at 1x, 2x, and 3x leverage and print a comparison table.",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
 

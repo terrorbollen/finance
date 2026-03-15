@@ -116,6 +116,14 @@ class HorizonMetrics:
     max_drawdown: float = 0.0  # negative percentage
     calmar_ratio: float = 0.0
 
+    # Reliability / significance
+    trade_count: int = 0
+    low_sample: bool = False  # True when trade_count < 30
+    win_rate_pvalue: float = 1.0  # one-sided binomial test vs 50% chance
+
+    # Equity curve: sorted (date, cumulative_net_return_pct) pairs
+    equity_curve: list[tuple[date, float]] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "horizon_days": self.horizon_days,
@@ -132,6 +140,10 @@ class HorizonMetrics:
             "sortino_ratio": self.sortino_ratio,
             "max_drawdown": self.max_drawdown,
             "calmar_ratio": self.calmar_ratio,
+            "trade_count": self.trade_count,
+            "low_sample": self.low_sample,
+            "win_rate_pvalue": self.win_rate_pvalue,
+            "equity_curve": [(d.isoformat(), v) for d, v in self.equity_curve],
         }
 
 
@@ -144,17 +156,19 @@ class BacktestResult:
     end_date: date
     trading_days: int
     buy_hold_return: float
+    leverage: float = 1.0
 
     daily_predictions: list[DailyPrediction] = field(default_factory=list)
     horizon_metrics: dict[int, HorizonMetrics] = field(default_factory=dict)
 
     def summary(self) -> str:
         """Generate a human-readable summary of backtest results."""
+        leverage_str = f"{self.leverage:.1f}x leverage" if self.leverage != 1.0 else "no leverage"
         lines = [
             "=" * 80,
             f"{'BACKTEST RESULTS: ' + self.ticker:^80}",
             "=" * 80,
-            f"Period: {self.start_date} to {self.end_date} ({self.trading_days} trading days)",
+            f"Period: {self.start_date} to {self.end_date} ({self.trading_days} trading days)  |  {leverage_str}",
             "",
             "SIGNAL ACCURACY BY HORIZON (Primary Metrics)",
             "-" * 80,
@@ -208,7 +222,8 @@ class BacktestResult:
                 "",
                 "SIMULATED TRADING PERFORMANCE (per horizon)",
                 "-" * 80,
-                f"{'Horizon':<10} {'Win Rate':<10} {'Gross Ret':<12} {'Net Ret':<12} {'Sharpe':<8} {'Sortino':<8} {'Max DD':<10} {'Calmar':<8}",
+                "  ** p<0.01  * p<0.05  ⚠ <30 trades (low sample — treat metrics with caution)",
+                f"{'Horizon':<10} {'Trades':<10} {'Win Rate':<14} {'Gross Ret':<12} {'Net Ret':<12} {'Sharpe':<8} {'Max DD':<10} {'Calmar':<8}",
             ]
         )
 
@@ -216,11 +231,22 @@ class BacktestResult:
             m = self.horizon_metrics[horizon]
             dd_str = f"{m.max_drawdown:+.1f}%" if m.max_drawdown != 0.0 else "N/A"
             calmar_str = f"{m.calmar_ratio:.2f}" if m.calmar_ratio != 0.0 else "N/A"
+
+            # Significance marker for win rate
+            if m.win_rate_pvalue < 0.01:
+                sig = "**"
+            elif m.win_rate_pvalue < 0.05:
+                sig = "*"
+            else:
+                sig = ""
+            low_marker = " ⚠" if m.low_sample else ""
+            win_str = f"{m.win_rate * 100:.1f}%{sig}"
+            trade_str = f"{m.trade_count}{low_marker}"
+
             lines.append(
-                f"{horizon}-day{'':<5} {m.win_rate * 100:.1f}%{'':<5} "
+                f"{horizon}-day{'':<5} {trade_str:<10} {win_str:<14} "
                 f"{m.total_return:+.2f}%{'':<5} {m.net_total_return:+.2f}%{'':<5} "
-                f"{m.sharpe_ratio:.2f}{'':<4} {m.sortino_ratio:.2f}{'':<4} "
-                f"{dd_str:<10} {calmar_str}"
+                f"{m.sharpe_ratio:.2f}{'':<4} {dd_str:<10} {calmar_str}"
             )
 
         lines.extend(
@@ -250,6 +276,23 @@ class BacktestResult:
         """Export results to JSON file."""
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
+
+    def export_equity_curve_csv(self, path: str, horizon: int):
+        """Export cumulative equity curve for a given horizon to CSV.
+
+        Columns: date, cumulative_net_return_pct
+        """
+        import csv
+
+        metrics = self.horizon_metrics.get(horizon)
+        if metrics is None or not metrics.equity_curve:
+            return
+
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["date", "cumulative_net_return_pct"])
+            for dt, value in metrics.equity_curve:
+                writer.writerow([dt.isoformat(), value])
 
     def export_csv(self, path: str):
         """Export predictions to CSV file."""

@@ -1,10 +1,14 @@
 """Custom loss functions for trading signal model."""
 
+from collections.abc import Callable
+
 import tensorflow as tf
 from tensorflow import keras
 
 
-def sparse_focal_loss(gamma: float = 2.0, alpha: float = 0.25):
+def sparse_focal_loss(
+    gamma: float = 2.0, alpha: float = 0.25
+) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """
     Focal Loss for multi-class classification with sparse labels.
 
@@ -25,7 +29,7 @@ def sparse_focal_loss(gamma: float = 2.0, alpha: float = 0.25):
         Lin et al., "Focal Loss for Dense Object Detection", ICCV 2017
     """
 
-    def focal_loss_fn(y_true, y_pred):
+    def focal_loss_fn(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         # Clip predictions to prevent log(0)
         y_pred = tf.clip_by_value(y_pred, keras.backend.epsilon(), 1 - keras.backend.epsilon())
 
@@ -56,7 +60,9 @@ def sparse_focal_loss(gamma: float = 2.0, alpha: float = 0.25):
     return focal_loss_fn
 
 
-def balanced_focal_loss(gamma: float = 2.0, class_weights: list | None = None):
+def balanced_focal_loss(
+    gamma: float = 2.0, class_weights: list[float] | None = None
+) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """
     Focal Loss with per-class weights for severe imbalance.
 
@@ -71,7 +77,7 @@ def balanced_focal_loss(gamma: float = 2.0, class_weights: list | None = None):
     weights_list = class_weights if class_weights is not None else [1.0, 1.0, 1.0]
     weights_tensor = tf.constant(weights_list, dtype=tf.float32)
 
-    def balanced_focal_loss_fn(y_true, y_pred):
+    def balanced_focal_loss_fn(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
         # Clip predictions
         y_pred = tf.clip_by_value(y_pred, keras.backend.epsilon(), 1 - keras.backend.epsilon())
 
