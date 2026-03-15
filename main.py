@@ -5,7 +5,7 @@ import argparse
 import sys
 from datetime import UTC, datetime
 
-from backtesting import Backtester
+from backtesting import Backtester, PortfolioBacktester
 from backtesting.results import HorizonMetrics, Signal
 from data.fetcher import StockDataFetcher
 from models.mlflow_tracking import (
@@ -308,6 +308,29 @@ def cmd_backtest(args):
     except Exception as e:
         print(f"Backtest error: {e}")
         sys.exit(1)
+
+
+def cmd_portfolio(args):
+    """Run a portfolio backtest across multiple tickers with shared capital."""
+    from datetime import datetime as _dt
+
+    start_date = _dt.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
+    end_date = _dt.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
+
+    backtester = PortfolioBacktester(
+        model_name=getattr(args, "name", None),
+        commission_pct=args.commission,
+        initial_capital=args.capital,
+        max_positions=args.max_positions,
+        strict_holdout=not args.no_strict_holdout,
+    )
+    result = backtester.run(
+        tickers=args.tickers,
+        horizon=args.horizon,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    print(result.summary())
 
 
 def cmd_history(args):
@@ -629,6 +652,21 @@ Examples:
     )
     backtest_parser.add_argument("--name", default=None, help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')")
     backtest_parser.set_defaults(func=cmd_backtest)
+
+    # portfolio command
+    portfolio_parser = subparsers.add_parser(
+        "portfolio", help="Backtest multiple tickers as a portfolio with shared capital"
+    )
+    portfolio_parser.add_argument("tickers", nargs="+", help="Ticker symbols")
+    portfolio_parser.add_argument("--name", default=None, help="Model name (e.g. 'indexes')")
+    portfolio_parser.add_argument("--horizon", type=int, default=5, help="Holding period in trading days (default: 5)")
+    portfolio_parser.add_argument("--capital", type=float, default=10_000.0, help="Initial capital (default: 10000)")
+    portfolio_parser.add_argument("--max-positions", type=int, default=None, dest="max_positions", help="Max concurrent positions (default: number of tickers)")
+    portfolio_parser.add_argument("--commission", type=float, default=0.001, help="One-way commission as decimal (default: 0.001)")
+    portfolio_parser.add_argument("--start-date", dest="start_date", help="Start date YYYY-MM-DD")
+    portfolio_parser.add_argument("--end-date", dest="end_date", help="End date YYYY-MM-DD")
+    portfolio_parser.add_argument("--no-strict-holdout", action="store_true", dest="no_strict_holdout", help="Allow overlap with training data")
+    portfolio_parser.set_defaults(func=cmd_portfolio)
 
     # history command
     history_parser = subparsers.add_parser(

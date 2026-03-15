@@ -31,6 +31,7 @@ make a backtest result trustworthy.
 
 from backtesting.backtester import Backtester
 from backtesting.metrics import MetricsCalculator
+from backtesting.portfolio import PortfolioBacktester, PortfolioResult
 from backtesting.results import (
     BacktestResult,
     ClassMetrics,
@@ -49,4 +50,6 @@ __all__ = [
     "BacktestResult",
     "MetricsCalculator",
     "Backtester",
+    "PortfolioBacktester",
+    "PortfolioResult",
 ]
