@@ -86,11 +86,17 @@ class ModelConfig(BaseModel):
         Path(path).write_text(self.model_dump_json(indent=2))
 
     @staticmethod
-    def checkpoint_paths() -> dict[str, str]:
-        """Return the canonical checkpoint file paths."""
+    def checkpoint_paths(name: str | None = None) -> dict[str, str]:
+        """Return the canonical checkpoint file paths for a named model.
+
+        Args:
+            name: Model name (e.g. 'financials'). Uses 'checkpoints/<name>/'.
+                  If None, uses the default 'checkpoints/' directory.
+        """
+        base = f"checkpoints/{name}" if name else "checkpoints"
         return {
-            "weights": "checkpoints/signal_model.weights.h5",
-            "config": "checkpoints/signal_model_config.json",
-            "calibration": "checkpoints/calibration.json",
-            "calibration_directional": "checkpoints/calibration_directional.json",
+            "weights": f"{base}/signal_model.weights.h5",
+            "config": f"{base}/signal_model_config.json",
+            "calibration": f"{base}/calibration.json",
+            "calibration_directional": f"{base}/calibration_directional.json",
         }

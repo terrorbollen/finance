@@ -26,7 +26,12 @@ def cmd_analyze(args):
     """Analyze a single ticker and generate a signal."""
     print(f"\nAnalyzing {args.ticker}...")
 
-    generator = SignalGenerator(min_confidence=args.min_confidence)
+    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
+    generator = SignalGenerator(
+        model_path=paths["weights"],
+        calibration_path=paths["calibration"],
+        min_confidence=args.min_confidence,
+    )
     try:
         signal = generator.generate(args.ticker)
         print(signal)
@@ -42,7 +47,12 @@ def cmd_scan(args):
     print(f"\nScanning {len(tickers)} tickers...")
     print("-" * 50)
 
-    generator = SignalGenerator(min_confidence=args.min_confidence)
+    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
+    generator = SignalGenerator(
+        model_path=paths["weights"],
+        calibration_path=paths["calibration"],
+        min_confidence=args.min_confidence,
+    )
     signals = generator.scan(tickers)
 
     if not signals:
@@ -108,6 +118,7 @@ def cmd_train(args):
             print("\n" + results.summary())
         else:
             # Standard training
+            paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
             trainer = ModelTrainer()
             results = trainer.train(
                 tickers=tickers,
@@ -116,6 +127,7 @@ def cmd_train(args):
                 use_focal_loss=not args.no_focal_loss,
                 track_with_mlflow=track,
                 tags=cli_tags,
+                model_path=paths["weights"],
             )
             print("\nTraining complete!")
             print(f"Final test accuracy: {results['test_signal_accuracy']:.4f}")
@@ -125,8 +137,9 @@ def cmd_train(args):
                 _run_calibration(
                     tickers=results["loaded_tickers"],
                     horizon=5,
-                    output_path=ModelConfig.checkpoint_paths()["calibration"],
+                    output_path=paths["calibration"],
                     mlflow_run_id=results.get("mlflow_run_id"),
+                    model_name=getattr(args, "name", None),
                 )
     except Exception as e:
         print(f"Training error: {e}")
@@ -148,10 +161,12 @@ def cmd_list(args):
 
 def _run_leverage_comparison(args, start_date, end_date, horizons):
     """Run backtest at 1x, 2x, 3x leverage and print a comparison table."""
+    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
     leverages = [1.0, 2.0, 3.0]
     results = []
     for lev in leverages:
         backtester = Backtester(
+            model_path=paths["weights"],
             commission_pct=args.commission,
             strict_holdout=not args.no_strict_holdout,
             leverage=lev,
@@ -206,7 +221,9 @@ def cmd_backtest(args):
         _run_leverage_comparison(args, start_date, end_date, horizons)
         return
 
+    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
     backtester = Backtester(
+        model_path=paths["weights"],
         commission_pct=args.commission,
         strict_holdout=not args.no_strict_holdout,
         leverage=args.leverage,
@@ -346,6 +363,7 @@ def _run_calibration(
     output_path: str,
     num_buckets: int = 10,
     mlflow_run_id: str | None = None,
+    model_name: str | None = None,
 ) -> bool:
     """
     Run backtests on tickers and fit a confidence calibrator.
@@ -368,7 +386,8 @@ def _run_calibration(
     all_correct = []
     ticker_metrics: dict[str, HorizonMetrics] = {}
 
-    backtester = Backtester()
+    cal_paths = ModelConfig.checkpoint_paths(model_name)
+    backtester = Backtester(model_path=cal_paths["weights"])
     total_start = time.monotonic()
 
     for i, ticker in enumerate(tickers, 1):
@@ -441,8 +460,9 @@ def _run_calibration(
 
 def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
+    name = getattr(args, "name", None)
     tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
-    output_path = args.output or ModelConfig.checkpoint_paths()["calibration"]
+    output_path = args.output or ModelConfig.checkpoint_paths(name)["calibration"]
     horizon = args.horizon if args.horizon is not None else 5
 
     ok = _run_calibration(
@@ -450,6 +470,7 @@ def cmd_calibrate(args):
         horizon=horizon,
         output_path=output_path,
         num_buckets=args.buckets,
+        model_name=name,
     )
     if not ok:
         sys.exit(1)
@@ -487,6 +508,7 @@ Examples:
         dest="min_confidence",
         help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
     )
+    analyze_parser.add_argument("--name", default=None, help="Model name (e.g. 'financials')")
     analyze_parser.set_defaults(func=cmd_analyze)
 
     # scan command
@@ -499,6 +521,7 @@ Examples:
         dest="min_confidence",
         help="Minimum confidence %% to act on a signal (e.g. 60); below this shows HOLD",
     )
+    scan_parser.add_argument("--name", default=None, help="Model name (e.g. 'financials')")
     scan_parser.set_defaults(func=cmd_scan)
 
     # train command
@@ -537,6 +560,7 @@ Examples:
         dest="no_calibrate",
         help="Skip automatic confidence calibration after training.",
     )
+    train_parser.add_argument("--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')")
     train_parser.set_defaults(func=cmd_train)
 
     # list command
@@ -603,6 +627,7 @@ Examples:
         help="Enforce non-overlapping positions: after a trade, skip the next N days "
              "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
     )
+    backtest_parser.add_argument("--name", default=None, help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')")
     backtest_parser.set_defaults(func=cmd_backtest)
 
     # history command
@@ -651,6 +676,7 @@ Examples:
     calibrate_parser.add_argument(
         "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"
     )
+    calibrate_parser.add_argument("--name", default=None, help="Model name — loads/saves to checkpoints/<name>/")
     calibrate_parser.set_defaults(func=cmd_calibrate)
 
     # Parse and execute

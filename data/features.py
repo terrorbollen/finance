@@ -91,9 +91,16 @@ class FeatureEngineer:
         self.df["bb_position"] = (self.df["close"] - bb_lower) / band_width.where(band_width > 0)
 
     def _add_volume_ratio(self, period: int = 20) -> None:
-        """Current volume relative to its rolling average, clipped at 10x."""
+        """Current volume relative to its rolling average, clipped at 10x.
+
+        Falls back to 1.0 (neutral) when volume data is unavailable (e.g. indexes).
+        """
+        if "volume" not in self.df.columns or self.df["volume"].isna().all() or (self.df["volume"] == 0).all():
+            self.df["volume_ratio"] = 1.0
+            return
         vol_avg = self.df["volume"].rolling(window=period).mean()
-        self.df["volume_ratio"] = (self.df["volume"] / vol_avg).clip(upper=10)
+        raw = (self.df["volume"] / vol_avg).clip(upper=10)
+        self.df["volume_ratio"] = raw.fillna(1.0)
 
     def _add_adx(self, period: int = 14) -> None:
         """ADX(14) — trend strength, range 0–100.
