@@ -158,6 +158,64 @@ class TestKellyPositionSize:
         assert 0.0 <= size <= gen.max_position_size
 
 
+class TestPortfolioRiskLimits:
+    """Tests for portfolio-level risk limit enforcement."""
+
+    @pytest.fixture
+    def gen(self) -> SignalGenerator:
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.max_drawdown_pct = 10.0
+        gen.max_positions = 5
+        return gen
+
+    def test_no_limit_breached_returns_original(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 5.0, 3)
+        assert result == Direction.BUY
+
+    def test_drawdown_at_limit_forces_hold(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 10.0, 0)
+        assert result == Direction.HOLD
+
+    def test_drawdown_above_limit_forces_hold(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.SELL, "AAPL", 15.0, 0)
+        assert result == Direction.HOLD
+
+    def test_drawdown_below_limit_passes_through(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 9.9, 0)
+        assert result == Direction.BUY
+
+    def test_max_positions_at_limit_forces_hold(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 0.0, 5)
+        assert result == Direction.HOLD
+
+    def test_max_positions_above_limit_forces_hold(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.SELL, "AAPL", 0.0, 7)
+        assert result == Direction.HOLD
+
+    def test_max_positions_below_limit_passes_through(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 0.0, 4)
+        assert result == Direction.BUY
+
+    def test_hold_is_never_suppressed_by_drawdown(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.HOLD, "AAPL", 99.0, 0)
+        assert result == Direction.HOLD
+
+    def test_hold_is_never_suppressed_by_position_count(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.HOLD, "AAPL", 0.0, 99)
+        assert result == Direction.HOLD
+
+    def test_none_drawdown_limit_disabled(self):
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.max_drawdown_pct = None
+        gen.max_positions = None
+        result = gen._apply_portfolio_limits(Direction.BUY, "AAPL", 99.0, 99)
+        assert result == Direction.BUY
+
+    def test_sell_direction_also_suppressed(self, gen: SignalGenerator):
+        result = gen._apply_portfolio_limits(Direction.SELL, "AAPL", 12.0, 0)
+        assert result == Direction.HOLD
+
+
 class TestAtrTakeProfit:
     """Tests for ATR-based take-profit target calculation."""
 

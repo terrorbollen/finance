@@ -102,13 +102,17 @@ class Backtester:
             self.metrics_calculator.sell_threshold = cfg.sell_threshold
 
     def _load_model(self, input_dim: int) -> None:
-        """Load the trained model."""
+        """Load the trained model and warm up TF graph compilation."""
         self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
         try:
             self.model.load(self.model_path)
         except Exception as e:
             print(f"Warning: Could not load model weights: {e}")
             print("Using untrained model (predictions will be random)")
+        # Warm up: run one dummy prediction to trigger TF graph compilation now,
+        # so all subsequent predict calls use the cached compiled graph.
+        dummy = np.zeros((1, self.sequence_length, input_dim), dtype=np.float32)
+        self.model.predict(dummy)
 
     def run(
         self,
@@ -195,34 +199,61 @@ class Backtester:
         min_start_idx = self.sequence_length
         backtest_indices = [int(i) for i in all_indices if i >= min_start_idx]
 
-        print(f"Running backtest on {ticker} from {start_date} to {end_date}")
-        print(f"Processing {len(backtest_indices)} trading days...")
+        print(f"Running backtest on {ticker} from {start_date} to {end_date}", flush=True)
+        print(f"Processing {len(backtest_indices)} trading days...", flush=True)
 
         if horizons is None:
             horizons = [1, 2, 3, 4, 5, 6, 7]
 
-        # Process each day
-        daily_predictions = []
+        # Build all sequences in one batch and run a single model.predict call.
+        feature_array = df[feature_cols].values
+        if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
+            feature_array_norm = (feature_array - self.feature_mean) / self.feature_std
+        else:
+            mean = feature_array.mean(axis=0)
+            std = feature_array.std(axis=0) + 1e-8
+            feature_array_norm = (feature_array - mean) / std
 
-        for idx in backtest_indices:
-            pred_date = pd.DatetimeIndex(df.index)[idx].date()
+        X_all = np.stack([
+            feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
+            for idx in backtest_indices
+        ])  # shape (N, sequence_length, n_features)
+
+        if self.model is None:
+            raise RuntimeError("Model not initialized — call _load_model() first")
+        signal_probs_all, signal_classes_all, price_targets_all = self.model.predict(X_all)
+
+        # Precompute relative volumes for all indices
+        rel_vols: np.ndarray | None = None
+        if "volume" in df.columns:
+            vol_series = df["volume"]
+            rolling_avg = vol_series.rolling(window=20, min_periods=1).mean()
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rel_vols = np.where(rolling_avg > 0, vol_series / rolling_avg, None)
+
+        # Process each day using pre-computed predictions
+        daily_predictions = []
+        df_index = pd.DatetimeIndex(df.index)
+        for i, idx in enumerate(backtest_indices):
+            pred_date = df_index[idx].date()
             current_price = float(df["close"].iloc[idx])
 
-            # Make predictions for all horizons
-            daily_pred = DailyPrediction(
-                date=pred_date,
-                current_price=current_price,
-            )
+            direction_idx = int(signal_classes_all[i])
+            predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
+            confidence = float(signal_probs_all[i][direction_idx])
+            predicted_change = float(price_targets_all[i])
+            relative_volume = float(rel_vols[idx]) if rel_vols is not None else None
 
+            daily_pred = DailyPrediction(date=pred_date, current_price=current_price)
             for horizon in horizons:
-                prediction = self._predict_for_date(
-                    df=df,
-                    feature_cols=feature_cols,
-                    idx=idx,
-                    horizon=horizon,
-                )
-                daily_pred.add_prediction(prediction)
-
+                daily_pred.add_prediction(HorizonPrediction(
+                    prediction_date=pred_date,
+                    horizon_days=horizon,
+                    predicted_signal=predicted_signal,
+                    confidence=confidence,
+                    predicted_price_change=predicted_change,
+                    relative_volume=relative_volume,
+                ))
             daily_predictions.append(daily_pred)
 
         # Fill in actual outcomes
@@ -232,6 +263,12 @@ class Backtester:
         first_price = df["close"].iloc[backtest_indices[0]]
         last_price = df["close"].iloc[backtest_indices[-1]]
         buy_hold_return = ((last_price / first_price) - 1) * 100
+
+        # Calculate OMXS30 benchmark return over the same period.
+        # Pass the already-fetched ^OMX series from ref_data to avoid a
+        # redundant yfinance request at the end of every run() call.
+        omxs30_data = ref_data.get("omxs30")
+        benchmark_return = self._compute_benchmark_return(start_date, end_date, omxs30_data)
 
         # Calculate metrics per horizon
         horizon_metrics = {}
@@ -249,10 +286,40 @@ class Backtester:
             end_date=end_date,
             trading_days=len(backtest_indices),
             buy_hold_return=buy_hold_return,
+            benchmark_return=benchmark_return,
             leverage=self.metrics_calculator.leverage,
             daily_predictions=daily_predictions,
             horizon_metrics=horizon_metrics,
         )
+
+    def _compute_benchmark_return(
+        self,
+        start_date: date,
+        end_date: date,
+        omxs30_df: pd.DataFrame | None = None,
+    ) -> float | None:
+        """Return OMXS30 return over the backtest period as a passive benchmark.
+
+        Uses ``omxs30_df`` if provided (already fetched during feature engineering)
+        to avoid a redundant yfinance request. Falls back to a live fetch if not
+        supplied. Returns None if data is unavailable.
+        """
+        try:
+            if omxs30_df is None:
+                period = self._INTERVAL_PERIOD.get(self.interval, "5y")
+                fetcher = StockDataFetcher(period=period, interval=self.interval)
+                omxs30_df = fetcher.fetch("^OMX")
+            bench_dates = pd.DatetimeIndex(omxs30_df.index).date
+            mask = (bench_dates >= start_date) & (bench_dates <= end_date)
+            df_period = omxs30_df[mask]
+            if len(df_period) < 2:
+                return None
+            first = float(df_period["close"].iloc[0])
+            last = float(df_period["close"].iloc[-1])
+            return ((last / first) - 1) * 100
+        except Exception as e:
+            print(f"Warning: Could not compute OMXS30 benchmark return: {e}")
+            return None
 
     def _predict_for_date(
         self,

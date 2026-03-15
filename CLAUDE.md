@@ -106,7 +106,7 @@ uv run mypy .
 docker-compose up -d
 
 # View MLflow UI
-# Open http://localhost:5000 in browser
+# Open http://localhost:5001 in browser
 ```
 
 ## MLflow Integration
@@ -115,7 +115,7 @@ All training and backtest runs are tracked in a single MLflow experiment named *
 
 ### Server setup
 ```bash
-docker-compose up -d   # starts MLflow at http://localhost:5000
+docker-compose up -d   # starts MLflow at http://localhost:5001
 ```
 The code auto-connects via the `MLFLOW_TRACKING_URI` env var (set in `docker-compose.yml`). Without Docker, results fall back to `./mlruns/` (file store).
 

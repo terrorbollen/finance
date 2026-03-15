@@ -240,10 +240,16 @@ def cmd_backtest(args):
                         "end_date": str(result.end_date),
                         "horizons": str(horizons),
                         "commission_pct": str(args.commission),
-                        "trading_days": result.trading_days,
-                        "buy_hold_return": result.buy_hold_return,
                     }
                 )
+                # Result-level metrics (comparable across runs)
+                result_metrics: dict[str, float] = {
+                    "trading_days": result.trading_days,
+                    "buy_hold_return": result.buy_hold_return,
+                }
+                if result.benchmark_return is not None:
+                    result_metrics["benchmark_return"] = result.benchmark_return
+                log_metrics(result_metrics)
                 # Log per-horizon metrics with horizon prefix
                 for h, m in result.horizon_metrics.items():
                     metrics: dict = {

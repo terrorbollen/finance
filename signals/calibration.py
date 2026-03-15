@@ -97,8 +97,7 @@ class ConfidenceCalibrator:
                     sample_count=sample_count,
                 )
             )
-
-        # Enforce monotonicity using pool adjacent violators (isotonic regression)
+        # Enforce monotonicity using isotonic regression
         if enforce_monotonic:
             calibrated_values = [b.calibrated for b in raw_buckets]
             calibrated_values = self._isotonic_regression(calibrated_values)
@@ -112,33 +111,19 @@ class ConfidenceCalibrator:
 
     def _isotonic_regression(self, values: list[float]) -> list[float]:
         """
-        Apply pool adjacent violators algorithm for isotonic regression.
+        Apply isotonic regression to ensure monotonically increasing output.
 
-        Ensures the output is monotonically increasing.
+        Uses sklearn's IsotonicRegression which implements the correct O(n)
+        pool adjacent violators algorithm.
         """
-        n = len(values)
-        if n == 0:
+        if len(values) == 0:
             return values
 
-        result = list(values)
+        from sklearn.isotonic import IsotonicRegression
 
-        # Pool adjacent violators
-        while True:
-            changed = False
-            i = 0
-            while i < n - 1:
-                if result[i] > result[i + 1]:
-                    # Pool these two values
-                    avg = (result[i] + result[i + 1]) / 2
-                    result[i] = avg
-                    result[i + 1] = avg
-                    changed = True
-                i += 1
-
-            if not changed:
-                break
-
-        return result
+        ir = IsotonicRegression(increasing=True, out_of_bounds="clip")
+        x = list(range(len(values)))
+        return list(ir.fit_transform(x, values))
 
     def calibrate(self, raw_confidence: float) -> float:
         """

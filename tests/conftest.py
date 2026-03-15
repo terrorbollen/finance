@@ -1,8 +1,53 @@
 """Pytest fixtures for the trading signal test suite."""
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# yfinance network guard
+# ---------------------------------------------------------------------------
+
+def _synthetic_yfinance_df(n: int = 1500) -> pd.DataFrame:
+    """Return a synthetic OHLCV DataFrame in yfinance's native format.
+
+    1500 business days ≈ 6 years — enough for any period/interval combination
+    used by the fetcher. Uppercase column names and UTC-aware index match what
+    yfinance actually returns.
+    """
+    rng = np.random.default_rng(42)
+    dates = pd.date_range("2018-01-02", periods=n, freq="B", tz="UTC")
+    close = 100.0 + np.cumsum(rng.normal(0, 1, n))
+    close = np.maximum(close, 1.0)  # keep prices positive
+    return pd.DataFrame(
+        {
+            "Open": close * 0.999,
+            "High": close * 1.005,
+            "Low": close * 0.995,
+            "Close": close,
+            "Volume": rng.integers(1_000_000, 10_000_000, n).astype(float),
+            "Dividends": 0.0,
+            "Stock Splits": 0.0,
+        },
+        index=dates,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _block_yfinance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Block all live yfinance network calls for every test.
+
+    Patches yfinance.Ticker so that any code path reaching the real network
+    (directly or via StockDataFetcher) gets synthetic data instead.  Tests
+    that mock StockDataFetcher at a higher level are unaffected — they never
+    reach yf.Ticker.
+    """
+    mock_ticker = MagicMock()
+    mock_ticker.history.return_value = _synthetic_yfinance_df()
+    monkeypatch.setattr("yfinance.Ticker", MagicMock(return_value=mock_ticker))
 
 
 @pytest.fixture

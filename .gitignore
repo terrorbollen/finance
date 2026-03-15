@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Environment variables (keep secrets out of git; see .env.example)
+.env
+
 # MLflow
 mlruns/
 mlartifacts/

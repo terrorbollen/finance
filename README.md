@@ -119,7 +119,7 @@ Date                   Ticker         Acc  WinRate  NetRet%  Sharpe   MaxDD%
 ### Starting the server
 ```bash
 docker-compose up -d
-# UI available at http://localhost:5000
+# UI available at http://localhost:5001
 ```
 When the server is running, all training and backtest runs are automatically stored there. Without Docker, results are saved locally to `./mlruns/` and are not visible in the UI (but `history` still works).
 
@@ -175,7 +175,7 @@ The `history` table now shows both runs side by side so you can see whether the 
 A change is worth keeping if **Sharpe and NetRet both improve** — accuracy alone can be misleading if the model is making more trades with lower quality.
 
 ### 5. Inspect a specific run in the UI
-Open `http://localhost:5000`, find the run in the `trading-signals` experiment, and inspect per-epoch loss curves and all logged params to understand exactly what configuration produced the result.
+Open `http://localhost:5001`, find the run in the `trading-signals` experiment, and inspect per-epoch loss curves and all logged params to understand exactly what configuration produced the result.
 
 ---
 

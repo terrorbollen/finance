@@ -51,7 +51,7 @@ class StockDataFetcher:
         resolved_ticker = self._resolve_ticker(ticker)
 
         stock = yf.Ticker(resolved_ticker)
-        df = stock.history(period=self.period, interval=self.interval)
+        df = stock.history(period=self.period, interval=self.interval, timeout=30)
 
         if df.empty:
             raise ValueError(f"No data found for ticker: {ticker}")
@@ -149,7 +149,7 @@ class StockDataFetcher:
         """
         resolved = self._resolve_ticker(ticker)
         stock = yf.Ticker(resolved)
-        df = stock.history(period=self.period, interval=self.interval)
+        df = stock.history(period=self.period, interval=self.interval, timeout=30)
 
         if df.empty:
             # Return zeros for the whole requested index

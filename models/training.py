@@ -16,7 +16,6 @@ from models.mlflow_tracking import (
     log_hyperparameters,
     log_metrics,
     log_model_artifact,
-    log_training_history,
     setup_mlflow,
     training_run,
 )
@@ -406,9 +405,6 @@ class ModelTrainer:
                 )
 
                 history, test_results, config_path = _do_training()
-
-                # Log training history per epoch (kept alongside autolog)
-                log_training_history(history.history)
 
                 # Log final test metrics
                 log_metrics(

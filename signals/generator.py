@@ -115,6 +115,8 @@ class SignalGenerator:
         take_profit_atr_multiplier: float = 3.0,
         max_position_size: float = 0.25,
         interval: str = "1d",
+        max_drawdown_pct: float | None = None,
+        max_positions: int | None = None,
     ):
         """
         Initialize the signal generator.
@@ -130,6 +132,11 @@ class SignalGenerator:
             take_profit_atr_multiplier: Take-profit distance as a multiple of ATR (default: 3.0).
             max_position_size: Hard cap on Kelly position size as fraction of capital (default: 0.25)
             interval: Data interval — "1d" or "1h". Controls which model and fetcher to use.
+            max_drawdown_pct: Maximum portfolio drawdown (positive %) before new BUY/SELL signals
+                              are suppressed. E.g. 10.0 halts trading when the portfolio is down
+                              10% from its peak. None disables this limit.
+            max_positions: Maximum number of concurrent open positions. Signals for new positions
+                           are forced to HOLD once this count is reached. None disables this limit.
         """
         self.interval = interval
         paths = ModelConfig.checkpoint_paths(interval)
@@ -140,6 +147,8 @@ class SignalGenerator:
         self.atr_multiplier = atr_multiplier
         self.take_profit_atr_multiplier = take_profit_atr_multiplier
         self.max_position_size = max_position_size
+        self.max_drawdown_pct = max_drawdown_pct
+        self.max_positions = max_positions
         self.model: SignalModel | None = None
         period = self._INTERVAL_PERIOD.get(interval, "1y")
         self.fetcher = StockDataFetcher(period=period, interval=interval)
@@ -206,12 +215,22 @@ class SignalGenerator:
             print(f"Warning: Could not load model weights: {e}")
             print("Using untrained model (predictions will be random)")
 
-    def generate(self, ticker: str) -> Signal:
+    def generate(
+        self,
+        ticker: str,
+        portfolio_drawdown: float = 0.0,
+        open_position_count: int = 0,
+    ) -> Signal:
         """
         Generate a trading signal for a given ticker.
 
         Args:
             ticker: Stock ticker symbol
+            portfolio_drawdown: Current portfolio drawdown as a positive percentage
+                                (e.g. 8.5 means the portfolio is 8.5% below its peak).
+                                Used to enforce max_drawdown_pct. Defaults to 0.
+            open_position_count: Number of currently open positions. Used to enforce
+                                 max_positions. Defaults to 0.
 
         Returns:
             Signal object with direction, confidence, and price targets
@@ -302,6 +321,11 @@ class SignalGenerator:
         if self.min_confidence is not None and confidence < self.min_confidence:
             direction = Direction.HOLD
 
+        # Portfolio risk limits: suppress new directional trades when limits are breached
+        direction = self._apply_portfolio_limits(
+            direction, ticker, portfolio_drawdown, open_position_count
+        )
+
         # Current price
         current_price = float(df_features["close"].iloc[-1])
 
@@ -363,6 +387,44 @@ class SignalGenerator:
             is_calibrated=is_calibrated,
         )
 
+    def _apply_portfolio_limits(
+        self,
+        direction: Direction,
+        ticker: str,
+        portfolio_drawdown: float,
+        open_position_count: int,
+    ) -> Direction:
+        """
+        Enforce portfolio-level risk limits, returning HOLD if a limit is breached.
+
+        Limits only apply to BUY and SELL directions; HOLD passes through unchanged.
+
+        Args:
+            direction: Proposed signal direction
+            ticker: Ticker label used in warning messages
+            portfolio_drawdown: Current drawdown as positive % from peak
+            open_position_count: Number of currently open positions
+
+        Returns:
+            Original direction, or HOLD if a limit is breached
+        """
+        if direction == Direction.HOLD:
+            return direction
+
+        if self.max_drawdown_pct is not None and portfolio_drawdown >= self.max_drawdown_pct:
+            print(
+                f"Portfolio drawdown {portfolio_drawdown:.1f}% >= limit {self.max_drawdown_pct:.1f}% — forcing HOLD for {ticker}"
+            )
+            return Direction.HOLD
+
+        if self.max_positions is not None and open_position_count >= self.max_positions:
+            print(
+                f"Open positions {open_position_count} >= limit {self.max_positions} — forcing HOLD for {ticker}"
+            )
+            return Direction.HOLD
+
+        return direction
+
     def _kelly_position_size(
         self,
         confidence_pct: float,
@@ -409,20 +471,34 @@ class SignalGenerator:
         # Half-Kelly, capped at max_position_size
         return min(0.5 * kelly_f, self.max_position_size)
 
-    def scan(self, tickers: list[str]) -> list[Signal]:
+    def scan(
+        self,
+        tickers: list[str],
+        portfolio_drawdown: float = 0.0,
+        open_position_count: int = 0,
+    ) -> list[Signal]:
         """
         Generate signals for multiple tickers.
 
         Args:
             tickers: List of ticker symbols
+            portfolio_drawdown: Current portfolio drawdown as a positive percentage.
+                                Passed to each generate() call for drawdown limit enforcement.
+            open_position_count: Number of currently open positions. The count is NOT
+                                 incremented automatically as signals are generated — the
+                                 caller is responsible for tracking live positions.
 
         Returns:
-            List of Signal objects
+            List of Signal objects sorted by confidence descending
         """
         signals = []
         for ticker in tickers:
             try:
-                signal = self.generate(ticker)
+                signal = self.generate(
+                    ticker,
+                    portfolio_drawdown=portfolio_drawdown,
+                    open_position_count=open_position_count,
+                )
                 signals.append(signal)
             except Exception as e:
                 print(f"Error generating signal for {ticker}: {e}")

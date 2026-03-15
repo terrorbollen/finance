@@ -40,9 +40,11 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | B2 | Add Sharpe, Sortino, max drawdown, Calmar ratio metrics | `backtesting/metrics.py`, `backtesting/results.py` | — | done |
 | B3 | Strict holdout split: enforce backtest period never overlaps training data | `backtesting/backtester.py`, `main.py`, `models/training.py` | Agent-Main | done |
 | B4 | Add slippage modeling (volume-based) | `backtesting/backtester.py` | — | done |
-| B5 | Add benchmark comparison (index vs strategy) | `backtesting/results.py`, `backtesting/backtester.py` | — | open |
+| B5 | Add benchmark comparison (index vs strategy) | `backtesting/results.py`, `backtesting/backtester.py` | — | done |
 | B6 | Walk-forward backtest: retrain model on expanding window during backtest | `backtesting/backtester.py`, `models/walk_forward.py` | — | open |
 | B7 | Monte Carlo simulation for backtest confidence intervals | `backtesting/metrics.py`, `backtesting/results.py` | — | open |
+| B8 | Calibration staleness warning: warn if calibrator was fitted >N days ago so live signals aren't silently based on stale calibration | `signals/calibration.py`, `main.py` | — | open |
+| B9 | Equity curve CSV export via CLI flag (`--export-equity`): backtester builds equity curves internally but there's no way to get them out | `backtesting/results.py`, `main.py` | — | open |
 
 ### Risk Management (`signals/`)
 
@@ -53,7 +55,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | R3 | Dynamic take-profit targets using ATR multiples | `signals/generator.py` | — | done |
 | R4 | Confidence threshold filtering (only trade above X%) | `signals/generator.py` | — | done |
 | R5 | Per-direction calibration (separate BUY/SELL/HOLD calibrators) | `signals/calibration.py`, `signals/generator.py` | — | done |
-| R6 | Portfolio-level risk limits (max drawdown cap, max position count) | `signals/generator.py` | — | open |
+| R6 | Portfolio-level risk limits (max drawdown cap, max position count) | `signals/generator.py` | — | done |
 | R7 | Expose directional calibration in `calibrate` CLI command (currently only fits the global calibrator) | `main.py` | — | open |
 | R8 | Add `get_calibration_table()` equivalent to `DirectionalCalibrator` for diagnostic display | `signals/calibration.py` | — | open |
 
@@ -66,6 +68,8 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | F3 | Calendar effects (day of week, month, earnings season) | `data/features.py` | — | done |
 | F4 | Volatility features (VIX/VSTOXX correlation) | `data/features.py`, `data/fetcher.py` | — | open |
 | F5 | Macro indicators (oil prices, interest rates) | `data/features.py`, `data/fetcher.py` | — | open |
+| F6 | Out-of-distribution feature detection: warn at inference time if live features fall outside training distribution (mean ± N std) to catch silent degradation on regime shifts | `data/features.py`, `signals/generator.py` | — | open |
+| F7 | Harden feature mismatch tolerance: currently proceeds silently with up to 10% missing features; surface which specific features are missing so the user knows what's being dropped | `backtesting/backtester.py`, `signals/generator.py` | — | open |
 
 ### Model Improvements (`models/`)
 
@@ -104,6 +108,9 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | I5 | Add type annotations to all CLI command handlers in main.py (`args: argparse.Namespace`, `-> None`) | `main.py` | — | open |
 | I6 | Enable `--check-untyped-defs` in mypy config (currently inner function bodies like `_do_training` in training.py are not type-checked at all) | `pyproject.toml` or `mypy.ini` | — | open |
 | I7 | Tighten return types in mlflow_tracking.py: `get_recent_runs` returns `list[dict]`, `get_best_run` returns `dict \| None` — both should use `dict[str, Any]` | `models/mlflow_tracking.py` | — | open |
+| I8 | Print `holdout_start_date` prominently after training so users immediately see where the holdout boundary is before running a backtest | `main.py` | — | open |
+| I9 | Remove fallback normalization: if training stats are unavailable at inference/backtest time, fail loudly instead of falling back to current-window stats (current fallback introduces data leakage) | `backtesting/backtester.py`, `signals/generator.py` | — | open |
+| I10 | Backfill `holdout_start_date` in old model configs or add a CLI flag (`--holdout-start`) to pass it at backtest time so holdout enforcement works on pre-existing checkpoints | `main.py`, `backtesting/backtester.py` | — | open |
 
 ---
 

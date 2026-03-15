@@ -8,6 +8,19 @@ import mlflow
 from mlflow.tracking import MlflowClient
 
 
+def _load_env_file(path: str = ".env") -> None:
+    """Load key=value pairs from a .env file into os.environ (no-op if absent)."""
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
+
+
 def setup_mlflow(
     experiment_name: str = "trading-signals",
     tracking_uri: str | None = None,
@@ -27,6 +40,7 @@ def setup_mlflow(
     Returns:
         Experiment ID
     """
+    _load_env_file()
     uri = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI") or "file:./mlruns"
     mlflow.set_tracking_uri(uri)
 

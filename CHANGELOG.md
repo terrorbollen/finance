@@ -4,6 +4,16 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-15
+
+### Portfolio-level risk limits in SignalGenerator (R6)
+`SignalGenerator` now accepts two optional constructor parameters: `max_drawdown_pct` (halt new directional signals when portfolio is down this % from peak) and `max_positions` (suppress new signals once this many positions are open). Both `generate()` and `scan()` accept `portfolio_drawdown` and `open_position_count` arguments that the caller passes in with live portfolio state. The logic lives in `_apply_portfolio_limits()` — a testable helper that runs after the confidence threshold filter and forces HOLD when a limit is breached. HOLD signals pass through unchanged. Previously the generator had no awareness of portfolio state, making it possible to keep adding positions into a drawdown. 11 new unit tests added.
+
+### Benchmark comparison in backtest output (B5)
+`BacktestResult` now includes a `benchmark_return` field — the OMXS30 (`^OMX`) total return over the same backtest period. The backtester fetches it automatically at the end of `run()` and falls back to `None` gracefully if the network call fails. The `summary()` output now has a **BENCHMARK COMPARISON** section showing buy & hold (ticker), index return, and a pointer to the strategy net returns in the table above. `to_dict()` includes `benchmark_return` for JSON export. Previously there was no baseline, making it impossible to tell whether a positive net return reflected genuine alpha or simply a rising market.
+
+---
+
 ## 2026-03-16
 
 ### Auto-calibration after training

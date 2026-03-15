@@ -33,9 +33,14 @@ def _make_df(n_rows: int = 60, with_volume: bool = True) -> pd.DataFrame:
 def _mock_model(signal_idx: int = 0) -> MagicMock:
     """Mock SignalModel that always returns the same signal."""
     model = MagicMock()
-    probs = np.zeros((1, 3))
-    probs[0, signal_idx] = 0.8
-    model.predict.return_value = (probs, np.array([signal_idx]), np.array([2.0]))
+
+    def _predict(X: np.ndarray):
+        batch = X.shape[0]
+        probs = np.zeros((batch, 3))
+        probs[:, signal_idx] = 0.8
+        return probs, np.full(batch, signal_idx), np.full(batch, 2.0)
+
+    model.predict.side_effect = _predict
     return model
 
 

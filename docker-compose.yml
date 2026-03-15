@@ -2,7 +2,7 @@ services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.10.0
     ports:
-      - "5000:5000"
+      - "5001:5001"
     volumes:
       - ./mlruns:/mlflow/mlruns
       - ./mlartifacts:/mlflow/mlartifacts
@@ -11,6 +11,6 @@ services:
     command: >
       mlflow server
       --host 0.0.0.0
-      --port 5000
+      --port 5001
       --backend-store-uri /mlflow/mlruns
       --default-artifact-root /mlflow/mlartifacts

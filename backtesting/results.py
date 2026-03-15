@@ -150,6 +150,7 @@ class BacktestResult:
     trading_days: int
     buy_hold_return: float
     leverage: float = 1.0
+    benchmark_return: float | None = None  # OMXS30 return over the same period (None if unavailable)
 
     daily_predictions: list[DailyPrediction] = field(default_factory=list)
     horizon_metrics: dict[int, HorizonMetrics] = field(default_factory=dict)
@@ -242,13 +243,13 @@ class BacktestResult:
                 f"{m.sharpe_ratio:.2f}{'':<4} {dd_str:<10} {calmar_str}"
             )
 
-        lines.extend(
-            [
-                "",
-                f"Buy & Hold Return: {self.buy_hold_return:+.2f}%",
-            ]
-        )
-
+        lines.append("")
+        lines.append("BENCHMARK COMPARISON")
+        lines.append("-" * 80)
+        lines.append(f"Buy & Hold ({self.ticker + '):':20s} {self.buy_hold_return:+.2f}%")
+        if self.benchmark_return is not None:
+            lines.append(f"Index      (OMXS30):          {self.benchmark_return:+.2f}%")
+        lines.append("(Strategy net returns shown per horizon in table above)")
         lines.append("=" * 80)
 
         return "\n".join(lines)
@@ -261,6 +262,7 @@ class BacktestResult:
             "end_date": self.end_date.isoformat(),
             "trading_days": self.trading_days,
             "buy_hold_return": self.buy_hold_return,
+            "benchmark_return": self.benchmark_return,
             "daily_predictions": [d.to_dict() for d in self.daily_predictions],
             "horizon_metrics": {h: m.to_dict() for h, m in self.horizon_metrics.items()},
         }
