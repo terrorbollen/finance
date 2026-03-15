@@ -121,7 +121,8 @@ def cmd_train(args):
             from datetime import datetime as _dt
             paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
             holdout_date = _dt.strptime(args.holdout_start, "%Y-%m-%d").date() if getattr(args, "holdout_start", None) else None
-            trainer = ModelTrainer(holdout_date=holdout_date)
+            horizons = [int(h) for h in args.horizons.split(",")] if getattr(args, "horizons", None) else None
+            trainer = ModelTrainer(holdout_date=holdout_date, prediction_horizons=horizons)
             results = trainer.train(
                 tickers=tickers,
                 epochs=args.epochs,
@@ -593,6 +594,7 @@ Examples:
     )
     train_parser.add_argument("--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')")
     train_parser.add_argument("--holdout-start", default=None, dest="holdout_start", help="Fixed holdout boundary YYYY-MM-DD — only data before this date is used for training (e.g. 2025-01-01)")
+    train_parser.add_argument("--horizons", default=None, help="Comma-separated prediction horizons in days (default: 5,10,20). Use '5' for single-horizon mode which fixes SELL suppression from multi-head consensus.")
     train_parser.set_defaults(func=cmd_train)
 
     # list command

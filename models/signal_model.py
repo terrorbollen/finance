@@ -121,13 +121,16 @@ class SignalModel:
         # Average probabilities for confidence reporting
         avg_probs = np.mean(np.stack(signal_probs_list, axis=0), axis=0)  # (batch, 3)
 
-        # Majority-vote consensus: need 2+ of 3 horizons to agree on Buy or Sell
+        # Majority-vote consensus: need >half of horizons to agree on Buy or Sell.
+        # With 1 horizon → threshold=1; with 3 → threshold=2; scales automatically.
+        n_horizons = len(signal_probs_list)
+        majority = n_horizons // 2 + 1
         signal_class = np.ones(batch_size, dtype=int)  # default HOLD
         for i in range(batch_size):
             v = votes[i]
-            if np.sum(v == 0) >= 2:
+            if np.sum(v == 0) >= majority:
                 signal_class[i] = 0  # BUY
-            elif np.sum(v == 2) >= 2:
+            elif np.sum(v == 2) >= majority:
                 signal_class[i] = 2  # SELL
 
         return avg_probs, signal_class, price_target.flatten()
