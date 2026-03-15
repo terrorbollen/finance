@@ -323,6 +323,9 @@ def cmd_portfolio(args):
         initial_capital=args.capital,
         max_positions=args.max_positions,
         strict_holdout=not args.no_strict_holdout,
+        leverage=args.leverage,
+        use_kelly=args.kelly,
+        kelly_max=args.kelly_max,
     )
     result = backtester.run(
         tickers=args.tickers,
@@ -666,6 +669,9 @@ Examples:
     portfolio_parser.add_argument("--start-date", dest="start_date", help="Start date YYYY-MM-DD")
     portfolio_parser.add_argument("--end-date", dest="end_date", help="End date YYYY-MM-DD")
     portfolio_parser.add_argument("--no-strict-holdout", action="store_true", dest="no_strict_holdout", help="Allow overlap with training data")
+    portfolio_parser.add_argument("--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)")
+    portfolio_parser.add_argument("--kelly", action="store_true", help="Use Kelly criterion to size each trade by model confidence")
+    portfolio_parser.add_argument("--kelly-max", type=float, default=3.0, dest="kelly_max", help="Max leverage Kelly can assign per trade (default: 3.0)")
     portfolio_parser.set_defaults(func=cmd_portfolio)
 
     # history command

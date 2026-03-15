@@ -10,8 +10,10 @@ Design:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 
@@ -26,6 +28,7 @@ class PortfolioTrade:
     open_date: date
     close_date: date          # The prediction_date that closes this trade
     entry_value: float        # Capital committed at open
+    effective_leverage: float = 1.0      # Kelly or fixed leverage applied
     actual_return: float | None = None   # Decimal (e.g. 0.05 = +5%)
     commission_paid: float = 0.0
 
@@ -54,6 +57,8 @@ class PortfolioResult:
     horizon_days: int
     initial_capital: float
     final_capital: float
+    leverage: float
+    use_kelly: bool
     equity_curve: list[tuple[date, float]]
     trades: list[PortfolioTrade] = field(default_factory=list)
 
@@ -118,13 +123,14 @@ class PortfolioResult:
         return stats
 
     def summary(self) -> str:
+        lev_str = f"  |  Kelly (max {self.leverage:.0f}x)" if self.use_kelly else (f"  |  {self.leverage:.0f}x leverage" if self.leverage != 1.0 else "")
         lines = [
             "=" * 72,
             "  PORTFOLIO BACKTEST RESULTS",
             "=" * 72,
             f"  Tickers : {', '.join(self.tickers)}",
             f"  Model   : {self.model_name or 'default'}",
-            f"  Period  : {self.start_date} → {self.end_date}  |  {self.horizon_days}d horizon",
+            f"  Period  : {self.start_date} → {self.end_date}  |  {self.horizon_days}d horizon{lev_str}",
             f"  Capital : {self.initial_capital:,.0f} → {self.final_capital:,.2f}",
             "",
             f"  Total Return  : {self.total_return:+.2f}%",
@@ -163,12 +169,21 @@ class PortfolioBacktester:
         initial_capital: float = 10_000.0,
         max_positions: int | None = None,
         strict_holdout: bool = True,
+        leverage: float = 1.0,
+        use_kelly: bool = False,
+        kelly_max: float = 3.0,
+        stop_loss_pct: float = 0.05,
     ):
         self.model_name = model_name
         self.commission_pct = commission_pct
         self.initial_capital = initial_capital
         self.max_positions = max_positions
         self.strict_holdout = strict_holdout
+        self.leverage = leverage
+        self.use_kelly = use_kelly
+        self.kelly_max = kelly_max          # cap: e.g. 3.0 = max 3x per trade
+        self.stop_loss_pct = stop_loss_pct  # fallback stop for Kelly calc
+        self._cal_buckets: list[dict] = self._load_calibration_buckets(model_name)
 
     def run(
         self,
@@ -226,10 +241,11 @@ class PortfolioBacktester:
                     pred is not None and pred.actual_price_change is not None
                 ) else None
                 trade.actual_return = actual_return
-                commission = entry_val * self.commission_pct * 2
+                eff_lev = trade.effective_leverage
+                commission = entry_val * self.commission_pct * 2 * eff_lev
                 trade.commission_paid = commission
                 if actual_return is not None:
-                    capital += entry_val + entry_val * actual_return - commission
+                    capital += entry_val + entry_val * actual_return * eff_lev - commission
                 else:
                     capital += entry_val  # return capital as-is for incomplete predictions
                 completed.append(trade)
@@ -246,16 +262,33 @@ class PortfolioBacktester:
                     continue
                 if capital < alloc_value:
                     continue  # not enough cash
-                capital -= alloc_value
+
+                # Position sizing
+                if self.use_kelly:
+                    # Kelly fraction = % of total capital to deploy on this trade
+                    cal_conf = self._calibrate(pred.confidence)
+                    kelly_f = self._kelly_fraction(cal_conf, pred.predicted_price_change)
+                    if kelly_f <= 0:
+                        continue  # Kelly says no edge — skip
+                    position_capital = min(capital, self.initial_capital * kelly_f)
+                    eff_lev = 1.0  # no extra leverage on top of Kelly sizing
+                else:
+                    position_capital = alloc_value
+                    eff_lev = self.leverage
+
+                if capital < position_capital:
+                    continue
+                capital -= position_capital
                 close_idx = min(i + horizon, len(all_dates) - 1)
                 close_date = all_dates[close_idx]
                 trade = PortfolioTrade(
                     ticker=ticker,
                     open_date=current_date,
                     close_date=close_date,
-                    entry_value=alloc_value,
+                    entry_value=position_capital,
+                    effective_leverage=eff_lev,
                 )
-                open_pos[ticker] = (i, close_idx, alloc_value, trade)
+                open_pos[ticker] = (i, close_idx, position_capital, trade)
                 equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
 
         # Mark any still-open trades as incomplete and return their capital
@@ -274,11 +307,50 @@ class PortfolioBacktester:
             start_date=all_dates[0],
             end_date=all_dates[-1],
             horizon_days=horizon,
+            leverage=self.leverage,
+            use_kelly=self.use_kelly,
             initial_capital=self.initial_capital,
             final_capital=final_capital,
             equity_curve=equity_curve,
             trades=all_trades,
         )
+
+    @staticmethod
+    def _load_calibration_buckets(model_name: str | None) -> list[dict]:
+        """Load calibration buckets from JSON — avoids importing signals/."""
+        path = Path(ModelConfig.checkpoint_paths(model_name)["calibration"])
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+            return data.get("buckets", [])
+        except Exception:
+            return []
+
+    def _calibrate(self, raw_confidence: float) -> float:
+        """Map raw softmax confidence to calibrated probability via bucket lookup."""
+        for b in self._cal_buckets:
+            if b["raw_min"] <= raw_confidence <= b["raw_max"]:
+                return b["calibrated"]
+        return raw_confidence  # fallback: return raw if no bucket matches
+
+    def _kelly_fraction(self, confidence: float, predicted_change_pct: float) -> float:
+        """
+        Half-Kelly position size as fraction of total capital.
+
+        f* = (p*b - q) / b  where b = predicted_gain / stop_loss
+        Returns half-Kelly fraction clamped to [0, kelly_max / max_positions].
+        The result is used directly as: position_size = initial_capital * kelly_f.
+        """
+        p = min(max(confidence, 0.0), 1.0)
+        q = 1.0 - p
+        stop_pct = self.stop_loss_pct * 100
+        b = max(abs(predicted_change_pct), 1e-6) / stop_pct
+        kelly_f = (p * b - q) / b
+        if kelly_f <= 0:
+            return 0.0
+        max_fraction = self.kelly_max / (self.max_positions or 1)
+        return min(0.5 * kelly_f, max_fraction)
 
     @staticmethod
     def _portfolio_value(cash: float, open_pos: dict) -> float:
