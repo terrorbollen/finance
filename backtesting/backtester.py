@@ -241,6 +241,11 @@ class Backtester:
             with np.errstate(divide="ignore", invalid="ignore"):
                 rel_vols = np.where(rolling_avg > 0, vol_series / rolling_avg, np.nan)
 
+        # Precompute ADX(14) values for regime filtering
+        adx_vals: np.ndarray | None = None
+        if "adx_14" in df.columns:
+            adx_vals = df["adx_14"].to_numpy(dtype=float)
+
         # Process each day using pre-computed predictions
         daily_predictions = []
         df_index = pd.DatetimeIndex(df.index)
@@ -254,6 +259,8 @@ class Backtester:
             predicted_change = float(price_targets_all[i])
             rv = float(rel_vols[idx]) if rel_vols is not None else float("nan")
             relative_volume = None if (rel_vols is None or np.isnan(rv)) else rv
+            adx_raw = float(adx_vals[idx]) if adx_vals is not None else float("nan")
+            adx = None if np.isnan(adx_raw) else adx_raw
 
             daily_pred = DailyPrediction(date=pred_date, current_price=current_price)
             for horizon in horizons:
@@ -264,6 +271,7 @@ class Backtester:
                     confidence=confidence,
                     predicted_price_change=predicted_change,
                     relative_volume=relative_volume,
+                    adx=adx,
                 ))
             daily_predictions.append(daily_pred)
 

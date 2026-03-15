@@ -173,6 +173,7 @@ class PortfolioBacktester:
         use_kelly: bool = False,
         kelly_max: float = 3.0,
         stop_loss_pct: float = 0.05,
+        adx_filter: float = 0.0,
     ):
         self.model_name = model_name
         self.commission_pct = commission_pct
@@ -183,6 +184,7 @@ class PortfolioBacktester:
         self.use_kelly = use_kelly
         self.kelly_max = kelly_max          # cap: e.g. 3.0 = max 3x per trade
         self.stop_loss_pct = stop_loss_pct  # fallback stop for Kelly calc
+        self.adx_filter = adx_filter        # min ADX to allow a trade (0 = disabled)
         self._cal_buckets: list[dict] = self._load_calibration_buckets(model_name)
 
     def run(
@@ -260,6 +262,8 @@ class PortfolioBacktester:
                 pred = pred_by_ticker[ticker].get(current_date)
                 if pred is None or pred.predicted_signal != Signal.BUY:
                     continue
+                if self.adx_filter > 0 and (pred.adx is None or pred.adx < self.adx_filter):
+                    continue  # regime filter: skip low-trend environments
                 if capital < alloc_value:
                     continue  # not enough cash
 

@@ -4,6 +4,34 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-15 (session 6)
+
+### Named model checkpoints
+
+`ModelConfig.checkpoint_paths()` now accepts an optional `name` parameter. When provided, checkpoints are stored in `checkpoints/<name>/` instead of the default `checkpoints/` directory. All CLI commands (`train`, `backtest`, `calibrate`, `scan`, `analyze`, `portfolio`) accept a `--name` flag to select a named model at runtime. The motivation is to allow multiple specialized models to be trained and evaluated independently without overwriting each other's weights or calibration files.
+
+### EU-5 European indexes model
+
+A specialized model was trained using `--name indexes` on five correlated European indexes: STOXX50E (`^STOXX50E`), DAX (`^GDAXI`), CAC40 (`^FCHI`), OMX Stockholm 30 (`^OMXS30`), and AEX (`^AEX`). Training on correlated indexes provides natural regularization — the model must learn patterns that generalize across all five rather than overfitting to the idiosyncratic noise of a single instrument. Adding global indexes (Asian/US) diluted signal; per-index single-ticker models underfit due to too few samples and no cross-asset regularization. The EU-5 configuration produced Sharpe ratios of 4–12 per index in backtest.
+
+### Volume fallback for indexes
+
+`FeatureEngineer._add_volume_ratio()` now detects when volume data is missing or entirely zero, which is common for index tickers that report no traded volume. In that case the method falls back to `volume_ratio = 1.0` (neutral) rather than computing NaN or zero values that would propagate through and corrupt downstream features.
+
+### Buy bias fix — horizon-scaled thresholds and fixed adaptive scaling
+
+Two root causes of buy bias were fixed simultaneously. The adaptive threshold scaling was inverted: high-volatility stocks had easier thresholds than low-volatility ones; fixed by computing `scale = volatility / ref_vol` (was `ref_vol / volatility`). Additionally, a single threshold was applied across all horizons, meaning the 20d horizon almost always exceeded the 2% threshold while the 5d horizon remained selective; fixed with `buy_thresh_h = base_thresh * sqrt(h / base_h)` so each horizon has a proportionally scaled threshold. The result was a training distribution shift from roughly 48% Buy / 15% Hold / 37% Sell to 28% Buy / 50% Hold / 22% Sell — a much more realistic label balance.
+
+### Portfolio backtester with shared capital
+
+A new `PortfolioBacktester` class was added in `backtesting/portfolio.py`. It runs signals on multiple tickers simultaneously against a shared capital pool, with fixed allocation per ticker (1/max_positions of total capital). Positions open on BUY signals and close automatically after `horizon` trading days, with only one open position per ticker at a time and commission applied on both entry and exit. A new `PortfolioResult` dataclass captures total_return, Sharpe, max_drawdown, win_rate, per_ticker_stats, and equity_curve. A new `portfolio` CLI subcommand exposes `--name`, `--horizon`, `--capital`, `--max-positions`, `--commission`, `--start-date`, `--end-date`, `--leverage`, `--kelly`, and `--kelly-max` flags.
+
+### Leverage and Kelly criterion in portfolio backtester
+
+Fixed leverage (`--leverage 2`) multiplies P&L on each trade, doubling returns at the cost of doubled drawdown. Kelly criterion (`--kelly`) sizes each position as a fraction of total capital using calibrated confidence via `f* = (p*b - q) / b` (half-Kelly, clamped to `kelly_max / max_positions`). Calibrated confidence is loaded directly from the checkpoint's `calibration.json` without importing from `signals/`, respecting module isolation. Comparison results: 1x fixed +9.17% Sharpe 2.13; 2x fixed +18.33% Sharpe 1.55; Kelly +6.63% Sharpe 1.37. Kelly underperforms because model confidence clusters narrowly in the 54–69% calibrated range, leaving little room for meaningful variable sizing; 2x fixed leverage is the best practical choice.
+
+---
+
 ## 2026-03-15 (session 5)
 
 ### Multi-horizon training with max-return labeling

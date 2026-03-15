@@ -25,6 +25,9 @@ class HorizonPrediction:
     # Volume data for slippage modeling (today / rolling_20d_avg; None if unavailable)
     relative_volume: float | None = None
 
+    # ADX(14) on the prediction date — used for regime filtering (None if unavailable)
+    adx: float | None = None
+
     @property
     def is_correct(self) -> bool | None:
         """Check if the predicted signal matches the actual outcome."""
@@ -44,6 +47,7 @@ class HorizonPrediction:
             "target_date": self.target_date.isoformat() if self.target_date else None,
             "is_correct": self.is_correct,
             "relative_volume": self.relative_volume,
+            "adx": self.adx,
         }
 
 

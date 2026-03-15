@@ -24,31 +24,31 @@
     {
       "raw_min": 0.30000000000000004,
       "raw_max": 0.4,
-      "calibrated": 0.5462686567164179,
-      "sample_count": 1675
+      "calibrated": 0.6851851851851852,
+      "sample_count": 432
     },
     {
       "raw_min": 0.4,
       "raw_max": 0.5,
-      "calibrated": 0.691833611574847,
-      "sample_count": 1198
+      "calibrated": 0.7387964148527529,
+      "sample_count": 781
     },
     {
       "raw_min": 0.5,
       "raw_max": 0.6000000000000001,
-      "calibrated": 0.691833611574847,
-      "sample_count": 48
+      "calibrated": 0.8000000000000002,
+      "sample_count": 18
     },
     {
       "raw_min": 0.6000000000000001,
       "raw_max": 0.7000000000000001,
-      "calibrated": 0.691833611574847,
-      "sample_count": 9
+      "calibrated": 0.8000000000000002,
+      "sample_count": 0
     },
     {
       "raw_min": 0.7000000000000001,
       "raw_max": 0.8,
-      "calibrated": 0.75,
+      "calibrated": 0.8000000000000002,
       "sample_count": 0
     },
     {

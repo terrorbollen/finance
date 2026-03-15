@@ -34,6 +34,7 @@ class ModelTrainer:
         buy_threshold: float = 0.02,
         sell_threshold: float = -0.02,
         use_adaptive_thresholds: bool = True,
+        holdout_date: date | None = None,
     ):
         """
         Initialize the trainer.
@@ -55,6 +56,7 @@ class ModelTrainer:
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.use_adaptive_thresholds = use_adaptive_thresholds
+        self.holdout_date = holdout_date  # If set, only train on data before this date
         self.model: SignalModel | None = None
         self.feature_columns: list[str] = []
         # Set by prepare_data(); declared here so the object's full shape is visible
@@ -201,6 +203,15 @@ class ModelTrainer:
                 df = fetcher.fetch(ticker)
                 ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
                 features, labels_list, prices, dates = self.prepare_data(df, reference_data=ref_data)
+                if self.holdout_date is not None:
+                    # Keep only data strictly before holdout_date so the model never
+                    # trains on any part of the evaluation window.
+                    cutoff = pd.Timestamp(self.holdout_date)
+                    mask = dates < cutoff
+                    features = features[mask]
+                    labels_list = [lbl[mask] for lbl in labels_list]
+                    prices = prices[mask]
+                    dates = dates[mask]
                 if len(features) == 0:
                     print(f"Skipping {ticker}: no usable samples")
                     continue
@@ -230,10 +241,14 @@ class ModelTrainer:
         # Compute the actual holdout start: the latest calendar date that appears
         # in any ticker's training or validation split.  We look at each ticker's
         # date index independently so that the split index maps cleanly to a date.
-        latest_val_date = max(
-            dates[min(int(len(dates) * (self.train_ratio + self.val_ratio)), len(dates) - 1)]
-            for dates in all_dates
-        )
+        if self.holdout_date is not None:
+            # The holdout boundary is explicitly specified — use it directly.
+            latest_val_date = pd.Timestamp(self.holdout_date)
+        else:
+            latest_val_date = max(
+                dates[min(int(len(dates) * (self.train_ratio + self.val_ratio)), len(dates) - 1)]
+                for dates in all_dates
+            )
 
         # Print class distribution BEFORE training (use first horizon as representative)
         label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}

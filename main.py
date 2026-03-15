@@ -118,8 +118,10 @@ def cmd_train(args):
             print("\n" + results.summary())
         else:
             # Standard training
+            from datetime import datetime as _dt
             paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
-            trainer = ModelTrainer()
+            holdout_date = _dt.strptime(args.holdout_start, "%Y-%m-%d").date() if getattr(args, "holdout_start", None) else None
+            trainer = ModelTrainer(holdout_date=holdout_date)
             results = trainer.train(
                 tickers=tickers,
                 epochs=args.epochs,
@@ -326,6 +328,7 @@ def cmd_portfolio(args):
         leverage=args.leverage,
         use_kelly=args.kelly,
         kelly_max=args.kelly_max,
+        adx_filter=getattr(args, "adx_filter", 0.0),
     )
     result = backtester.run(
         tickers=args.tickers,
@@ -587,6 +590,7 @@ Examples:
         help="Skip automatic confidence calibration after training.",
     )
     train_parser.add_argument("--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')")
+    train_parser.add_argument("--holdout-start", default=None, dest="holdout_start", help="Fixed holdout boundary YYYY-MM-DD — only data before this date is used for training (e.g. 2025-01-01)")
     train_parser.set_defaults(func=cmd_train)
 
     # list command
@@ -672,6 +676,7 @@ Examples:
     portfolio_parser.add_argument("--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)")
     portfolio_parser.add_argument("--kelly", action="store_true", help="Use Kelly criterion to size each trade by model confidence")
     portfolio_parser.add_argument("--kelly-max", type=float, default=3.0, dest="kelly_max", help="Max leverage Kelly can assign per trade (default: 3.0)")
+    portfolio_parser.add_argument("--adx-filter", type=float, default=0.0, dest="adx_filter", help="Minimum ADX(14) to allow a trade — skips BUY signals in low-trend/ranging markets (default: 0 = disabled)")
     portfolio_parser.set_defaults(func=cmd_portfolio)
 
     # history command
