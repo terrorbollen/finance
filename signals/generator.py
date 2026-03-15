@@ -152,6 +152,7 @@ class SignalGenerator:
         self.feature_std: np.ndarray | None = None
         self.feature_columns: list[str] | None = None
         self.input_dim: int | None = None
+        self.prediction_horizons: list[int] | None = None
 
         # Confidence calibration
         self.calibrator: ConfidenceCalibrator | None = None
@@ -177,6 +178,7 @@ class SignalGenerator:
             self.feature_std = cfg.feature_std_array
             self.sequence_length = cfg.sequence_length
             self.input_dim = cfg.input_dim
+            self.prediction_horizons = cfg.prediction_horizons
 
     def _load_calibrator(self) -> None:
         """Load confidence calibrators if available. Prefers directional calibrator."""
@@ -202,7 +204,11 @@ class SignalGenerator:
 
     def _load_model(self, input_dim: int) -> None:
         """Load the trained model."""
-        self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
+        self.model = SignalModel(
+            input_dim=input_dim,
+            sequence_length=self.sequence_length,
+            prediction_horizons=self.prediction_horizons,
+        )
         try:
             self.model.load(self.model_path)
         except Exception as e:

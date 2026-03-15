@@ -33,6 +33,7 @@ class ModelConfig(BaseModel):
     holdout_start_date: date
     buy_threshold: float = 0.015
     sell_threshold: float = -0.015
+    prediction_horizons: list[int] = [5, 10, 20]
 
     @field_validator("feature_std")
     @classmethod

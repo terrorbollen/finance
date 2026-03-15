@@ -63,7 +63,6 @@ def cmd_train(args):
     else:
         # Default training tickers - expanded for more diverse training data
         tickers = [
-            "^OMX",  # OMX Stockholm 30 Index
             "VOLV-B.ST",  # Volvo
             "ERIC-B.ST",  # Ericsson
             "HM-B.ST",  # H&M
@@ -423,7 +422,7 @@ def _run_calibration(
             "cal_total_predictions": float(len(all_confidences)),
         }
         for ticker, m in ticker_metrics.items():
-            safe = ticker.replace(".", "_").replace("-", "_")
+            safe = ticker.replace(".", "_").replace("-", "_").replace("^", "")
             metrics[f"cal_{safe}_accuracy"] = m.accuracy
             metrics[f"cal_{safe}_win_rate"] = m.win_rate
             metrics[f"cal_{safe}_sharpe"] = m.sharpe_ratio

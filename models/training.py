@@ -11,7 +11,7 @@ from tensorflow import keras
 
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
-from models.config import ModelConfig
+from models.config import FETCH_PERIOD, ModelConfig
 from models.mlflow_tracking import (
     log_hyperparameters,
     log_metrics,
@@ -30,7 +30,7 @@ class ModelTrainer:
         sequence_length: int = 20,
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
-        prediction_horizon: int = 5,
+        prediction_horizons: list[int] | None = None,
         buy_threshold: float = 0.015,
         sell_threshold: float = -0.015,
         use_adaptive_thresholds: bool = True,
@@ -42,13 +42,14 @@ class ModelTrainer:
             sequence_length: LSTM lookback window in trading days (default 20).
             train_ratio: Proportion of data for training
             val_ratio: Proportion of data for validation (rest is test)
-            prediction_horizon: Trading days ahead to predict (default 5).
+            prediction_horizons: Trading day horizons to predict (default [5, 10, 20]).
+                                 Labels use max-return over the window to reduce noise.
             buy_threshold: Min % gain to label as Buy
             sell_threshold: Max % loss to label as Sell
             use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
         """
         self.sequence_length = sequence_length
-        self.prediction_horizon = prediction_horizon
+        self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.buy_threshold = buy_threshold
@@ -64,60 +65,79 @@ class ModelTrainer:
         self,
         df: pd.DataFrame,
         reference_data: dict[str, pd.DataFrame] | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DatetimeIndex]:
+    ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray, pd.DatetimeIndex]:
         """
         Prepare features and labels from raw price data.
 
+        Labels use max-return over each horizon window rather than end-of-horizon
+        return, which significantly reduces label noise from single-day randomness.
+
         Args:
             df: DataFrame with OHLCV data
-            reference_data: Optional cross-asset reference data for F2 features.
+            reference_data: Optional cross-asset reference data (unused, kept for compat).
 
         Returns:
-            Tuple of (features, labels, price_changes, date_index)
+            Tuple of (features, labels_list, price_changes, date_index)
+            - labels_list: one label array per horizon in self.prediction_horizons
         """
-        # Add technical indicators
         engineer = FeatureEngineer(df, reference_data=reference_data)
         df_features = engineer.add_all_features()
-
-        # Store feature columns BEFORE adding labels
         self.feature_columns = engineer.get_feature_columns()
 
-        # Calculate future returns for labels
-        df_features["future_return"] = (
-            df_features["close"].shift(-self.prediction_horizon) / df_features["close"] - 1
-        )
-
-        # Determine thresholds
+        # Determine thresholds (adaptive or fixed)
         if self.use_adaptive_thresholds:
-            # Adaptive thresholds based on stock's volatility
-            # Use rolling std of returns as volatility measure
             volatility = df_features["close"].pct_change().rolling(20).std().median()
-            # Scale thresholds by volatility (typical volatility ~0.01-0.02)
-            scale = max(volatility / 0.015, 0.5)  # Don't go below 0.5x
+            scale = max(volatility / 0.015, 0.5)
             buy_thresh = self.buy_threshold * scale
             sell_thresh = self.sell_threshold * scale
         else:
             buy_thresh = self.buy_threshold
             sell_thresh = self.sell_threshold
 
-        # Create labels: 0=Buy, 1=Hold, 2=Sell
-        df_features["label"] = 1  # Default: Hold
-        df_features.loc[df_features["future_return"] > buy_thresh, "label"] = 0
-        df_features.loc[df_features["future_return"] < sell_thresh, "label"] = 2
+        # Max-return labeling: for each horizon h, label Buy if the best price
+        # achievable over the next h days exceeds buy_thresh; label Sell if the
+        # worst price falls below sell_thresh (and upside wasn't reached first).
+        close_vals = np.asarray(df_features["close"].values, dtype=float)
+        n = len(close_vals)
 
-        # Drop rows with NaN
+        # Future end-return at the middle horizon for the price-target regression head
+        mid_h = self.prediction_horizons[len(self.prediction_horizons) // 2]
+        df_features["future_return"] = (
+            df_features["close"].shift(-mid_h) / df_features["close"] - 1
+        )
+
+        from numpy.lib.stride_tricks import sliding_window_view  # noqa: PLC0415
+
+        for h in self.prediction_horizons:
+            max_ret = np.full(n, np.nan)
+            min_ret = np.full(n, np.nan)
+            if n > h:
+                windows = sliding_window_view(close_vals[1:], window_shape=h)  # (n-h, h)
+                max_ret[: n - h] = windows.max(axis=1) / close_vals[: n - h] - 1
+                min_ret[: n - h] = windows.min(axis=1) / close_vals[: n - h] - 1
+
+            # Store labels as columns so dropna() aligns them automatically
+            lbl = np.ones(n, dtype=float)  # HOLD=1 (float to allow NaN passthrough)
+            lbl[np.isnan(max_ret)] = np.nan
+            lbl[max_ret > buy_thresh] = 0                                # BUY
+            lbl[(max_ret <= buy_thresh) & (min_ret < sell_thresh)] = 2  # SELL
+            df_features[f"_label_{h}d"] = lbl
+
+        # Drop rows with NaN (TA warmup + last max_horizon rows without future prices)
         df_features = df_features.dropna()
 
-        # Extract arrays
+        label_cols = [f"_label_{h}d" for h in self.prediction_horizons]
+        aligned_labels: list[np.ndarray] = [
+            df_features[col].to_numpy().astype(int) for col in label_cols
+        ]
+
         features = df_features[self.feature_columns].values
-        labels = df_features["label"].to_numpy().astype(int)
-        price_changes = df_features["future_return"].to_numpy() * 100  # As percentage
+        price_changes = df_features["future_return"].to_numpy() * 100
         date_index = pd.DatetimeIndex(df_features.index)
 
-        # Replace any inf values with large finite values, then clip
         features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
 
-        return features, labels, price_changes, date_index
+        return features, aligned_labels, price_changes, date_index
 
     def train(
         self,
@@ -151,20 +171,23 @@ class ModelTrainer:
             setup_mlflow()
 
         # Fetch and combine data from all tickers
-        fetcher = StockDataFetcher(period=ModelConfig.FETCH_PERIOD)
-        all_features, all_labels, all_prices, all_dates = [], [], [], []
+        fetcher = StockDataFetcher(period=FETCH_PERIOD)
+        all_features: list[np.ndarray] = []
+        all_labels: list[list[np.ndarray]] = []  # [ticker][horizon_idx] -> array
+        all_prices: list[np.ndarray] = []
+        all_dates: list[pd.DatetimeIndex] = []
 
         loaded_tickers: list[str] = []
         for ticker in tickers:
             try:
                 df = fetcher.fetch(ticker)
                 ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
-                features, labels, prices, dates = self.prepare_data(df, reference_data=ref_data)
+                features, labels_list, prices, dates = self.prepare_data(df, reference_data=ref_data)
                 if len(features) == 0:
                     print(f"Skipping {ticker}: no usable samples")
                     continue
                 all_features.append(features)
-                all_labels.append(labels)
+                all_labels.append(labels_list)
                 all_prices.append(prices)
                 all_dates.append(dates)
                 loaded_tickers.append(ticker)
@@ -175,10 +198,14 @@ class ModelTrainer:
         if not all_features:
             raise ValueError("No data loaded for training")
 
-        # Combine all data
+        # Combine all data; concatenate each horizon's labels separately
         print(f"\nCombining data from {len(all_features)} tickers...")
         features = np.vstack(all_features)
-        labels = np.concatenate(all_labels)
+        # labels_list_combined[i] = concatenated labels for horizon i across all tickers
+        labels_list_combined: list[np.ndarray] = [
+            np.concatenate([t[i] for t in all_labels])
+            for i in range(len(self.prediction_horizons))
+        ]
         prices = np.concatenate(all_prices)
         print(f"Total samples: {len(features):,}  |  Features: {features.shape[1]}")
 
@@ -190,16 +217,17 @@ class ModelTrainer:
             for dates in all_dates
         )
 
-        # Print class distribution BEFORE training
-        unique, counts = np.unique(labels, return_counts=True)
-        total = len(labels)
-        print("\n" + "=" * 50)
-        print("CLASS DISTRIBUTION (before sequences):")
-        print("=" * 50)
+        # Print class distribution BEFORE training (use first horizon as representative)
         label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
-        for label, count in zip(unique, counts, strict=False):
+        labels_repr = labels_list_combined[0]
+        unique, counts = np.unique(labels_repr, return_counts=True)
+        total = len(labels_repr)
+        print("\n" + "=" * 50)
+        print(f"CLASS DISTRIBUTION — {self.prediction_horizons[0]}d horizon (before sequences):")
+        print("=" * 50)
+        for lbl, count in zip(unique, counts, strict=False):
             pct = count / total * 100
-            print(f"  {label_names.get(label, label)}: {count:,} samples ({pct:.1f}%)")
+            print(f"  {label_names.get(lbl, lbl)}: {count:,} samples ({pct:.1f}%)")
         print("=" * 50 + "\n")
 
         # Normalize features using training data only to avoid look-ahead bias.
@@ -218,43 +246,41 @@ class ModelTrainer:
 
         # Create sequences
         print(f"Creating sequences (length={self.sequence_length}, ~{n_sequences:,} sequences)...")
-        X, y_signal, y_price = create_sequences(features, labels, prices, self.sequence_length)
+        X, y_signal_list, y_price = create_sequences(
+            features, labels_list_combined, prices, self.sequence_length
+        )
         print(f"Sequences created: {len(X):,}")
 
-        # Compute class weights to handle imbalance
+        # Compute class weights from the first horizon's labels (representative)
         class_weights = compute_class_weight(
-            class_weight="balanced", classes=np.array([0, 1, 2]), y=y_signal
+            class_weight="balanced", classes=np.array([0, 1, 2]), y=y_signal_list[0]
         )
         class_weight_dict = dict(enumerate(class_weights))
         print("Class weights (to balance training):")
-        for label, weight in class_weight_dict.items():
-            print(f"  {label_names.get(label, label)}: {weight:.3f}")
+        for lbl, weight in class_weight_dict.items():
+            print(f"  {label_names.get(lbl, lbl)}: {weight:.3f}")
         print()
 
-        # Convert class weights to sample weights (for multi-output model compatibility)
-        sample_weights = np.array([class_weight_dict[label] for label in y_signal])
+        # Sample weights from first horizon labels
+        sample_weights = np.array([class_weight_dict[int(lbl)] for lbl in y_signal_list[0]])
 
         # Time-series split (no shuffling to preserve temporal order)
         n = len(X)
         train_end = int(n * self.train_ratio)
         val_end = int(n * (self.train_ratio + self.val_ratio))
 
-        X_train, y_signal_train, y_price_train, sw_train = (
-            X[:train_end],
-            y_signal[:train_end],
-            y_price[:train_end],
-            sample_weights[:train_end],
-        )
-        X_val, y_signal_val, y_price_val = (
-            X[train_end:val_end],
-            y_signal[train_end:val_end],
-            y_price[train_end:val_end],
-        )
-        X_test, y_signal_test, y_price_test = (
-            X[val_end:],
-            y_signal[val_end:],
-            y_price[val_end:],
-        )
+        X_train = X[:train_end]
+        y_signal_train = [ys[:train_end] for ys in y_signal_list]
+        y_price_train = y_price[:train_end]
+        sw_train = sample_weights[:train_end]
+
+        X_val = X[train_end:val_end]
+        y_signal_val = [ys[train_end:val_end] for ys in y_signal_list]
+        y_price_val = y_price[train_end:val_end]
+
+        X_test = X[val_end:]
+        y_signal_test = [ys[val_end:] for ys in y_signal_list]
+        y_price_test = y_price[val_end:]
 
         print(f"Training samples: {len(X_train)}")
         print(f"Validation samples: {len(X_val)}")
@@ -269,6 +295,7 @@ class ModelTrainer:
                 input_dim=input_dim,
                 sequence_length=self.sequence_length,
                 use_focal_loss=use_focal_loss,
+                prediction_horizons=self.prediction_horizons,
             )
 
             if use_focal_loss:
@@ -288,13 +315,18 @@ class ModelTrainer:
                 ),
             ]
 
-            # Train model
-            # When using focal loss, don't use sample weights (focal loss handles imbalance)
-            # Otherwise, use sample weights for class balancing
-            fit_kwargs = {
+            # Build named output dicts for multi-horizon training
+            y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train)}
+            y_train_dict["price_target"] = y_price_train
+            y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val)}
+            y_val_dict["price_target"] = y_price_val
+            y_test_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_test)}
+            y_test_dict["price_target"] = y_price_test
+
+            fit_kwargs: dict = {
                 "x": X_train,
-                "y": [y_signal_train, y_price_train],
-                "validation_data": (X_val, [y_signal_val, y_price_val]),
+                "y": y_train_dict,
+                "validation_data": (X_val, y_val_dict),
                 "epochs": epochs,
                 "batch_size": batch_size,
                 "callbacks": callbacks,
@@ -302,23 +334,26 @@ class ModelTrainer:
             }
 
             if not use_focal_loss:
-                # Only use sample weights with standard cross-entropy
-                fit_kwargs["sample_weight"] = [sw_train, np.ones_like(sw_train)]
+                fit_kwargs["sample_weight"] = {
+                    f"signal_{h}d": sw_train for h in self.prediction_horizons
+                } | {"price_target": np.ones_like(sw_train)}
 
             if self.model.model is None:
                 raise RuntimeError("SignalModel.model is None after build()")
             history = self.model.model.fit(**fit_kwargs)
 
             # Evaluate on test set
-            test_results: dict[str, float] = self.model.model.evaluate(
+            test_results: dict[str, float] = self.model.model.evaluate(  # type: ignore[assignment]
                 X_test,
-                [y_signal_test, y_price_test],
+                y_test_dict,
                 verbose=0,
                 return_dict=True,
             )
 
             print("\nTest Results:")
-            print(f"  Signal Accuracy: {test_results['signal_accuracy']:.4f}")
+            for h in self.prediction_horizons:
+                acc = test_results.get(f"signal_{h}d_accuracy", float("nan"))
+                print(f"  Signal Accuracy ({h}d): {acc:.4f}")
             print(f"  Price MAE: {test_results['price_target_mae']:.4f}%")
 
             # Save training config for inference
@@ -336,6 +371,7 @@ class ModelTrainer:
                 holdout_start_date=pd.Timestamp(latest_val_date).date(),
                 buy_threshold=self.buy_threshold,
                 sell_threshold=self.sell_threshold,
+                prediction_horizons=self.prediction_horizons,
             )
             cfg.save(config_path)
             print(f"Saved model config to {config_path}")
@@ -363,11 +399,11 @@ class ModelTrainer:
             mlflow.keras.autolog(log_every_n_steps=1, silent=True)
 
             with training_run(run_name=run_name, tags=run_tags):
-                # Build class distribution params for logging
-                label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
-                unique, counts = np.unique(labels, return_counts=True)
+                # Build class distribution params from first horizon (representative)
+                lbl_repr = labels_list_combined[0]
+                unique, counts = np.unique(lbl_repr, return_counts=True)
                 class_dist = {
-                    f"class_pct_{label_names.get(int(u), str(u)).lower()}": float(c / len(labels))
+                    f"class_pct_{label_names.get(int(u), str(u)).lower()}": float(c / len(lbl_repr))
                     for u, c in zip(unique, counts, strict=False)
                 }
 
@@ -377,7 +413,7 @@ class ModelTrainer:
                         "sequence_length": self.sequence_length,
                         "train_ratio": self.train_ratio,
                         "val_ratio": self.val_ratio,
-                        "prediction_horizon": self.prediction_horizon,
+                        "prediction_horizons": str(self.prediction_horizons),
                         "buy_threshold": self.buy_threshold,
                         "sell_threshold": self.sell_threshold,
                         "use_adaptive_thresholds": self.use_adaptive_thresholds,
@@ -395,14 +431,21 @@ class ModelTrainer:
 
                 history, test_results, config_path = _do_training()
 
-                # Log final test metrics
-                log_metrics(
-                    {
-                        "test_loss": test_results["loss"],
-                        "test_signal_accuracy": test_results["signal_accuracy"],
-                        "test_price_mae": test_results["price_target_mae"],
-                    }
+                # Log final test metrics (one accuracy per horizon + price MAE)
+                final_metrics: dict[str, float] = {
+                    "test_loss": float(test_results["loss"]),
+                    "test_price_mae": float(test_results["price_target_mae"]),
+                }
+                for h in self.prediction_horizons:
+                    key = f"signal_{h}d_accuracy"
+                    if key in test_results:
+                        final_metrics[f"test_signal_accuracy_{h}d"] = float(test_results[key])
+                # Use first-horizon accuracy as the canonical test_signal_accuracy for history view
+                first_key = f"signal_{self.prediction_horizons[0]}d_accuracy"
+                final_metrics["test_signal_accuracy"] = float(
+                    test_results.get(first_key, float("nan"))
                 )
+                log_metrics(final_metrics)
 
                 # Log model artifacts
                 log_model_artifact(model_path, artifact_path="model")
@@ -426,11 +469,12 @@ class ModelTrainer:
         else:
             history, test_results, _ = _do_training()
 
+        first_acc_key = f"signal_{self.prediction_horizons[0]}d_accuracy"
         return {
             "history": history.history,
-            "test_loss": test_results["loss"],
-            "test_signal_accuracy": test_results["signal_accuracy"],
-            "test_price_mae": test_results["price_target_mae"],
+            "test_loss": float(test_results["loss"]),
+            "test_signal_accuracy": float(test_results.get(first_acc_key, float("nan"))),
+            "test_price_mae": float(test_results["price_target_mae"]),
             "loaded_tickers": loaded_tickers,
             "mlflow_run_id": run_id,
         }

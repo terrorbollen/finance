@@ -68,6 +68,7 @@ class Backtester:
         self.feature_std: np.ndarray | None = None
         self.input_dim: int | None = None
         self.holdout_start_date: date | None = None
+        self.prediction_horizons: list[int] | None = None
 
         self.metrics_calculator = MetricsCalculator(
             buy_threshold=buy_threshold,
@@ -92,12 +93,17 @@ class Backtester:
             self.holdout_start_date = cfg.holdout_start_date
             self.buy_threshold = cfg.buy_threshold
             self.sell_threshold = cfg.sell_threshold
+            self.prediction_horizons = cfg.prediction_horizons
             self.metrics_calculator.buy_threshold = cfg.buy_threshold
             self.metrics_calculator.sell_threshold = cfg.sell_threshold
 
     def _load_model(self, input_dim: int) -> None:
         """Load the trained model and warm up TF graph compilation."""
-        self.model = SignalModel(input_dim=input_dim, sequence_length=self.sequence_length)
+        self.model = SignalModel(
+            input_dim=input_dim,
+            sequence_length=self.sequence_length,
+            prediction_horizons=self.prediction_horizons,
+        )
         try:
             self.model.load(self.model_path)
         except Exception as e:

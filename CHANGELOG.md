@@ -4,6 +4,14 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-15 (session 5)
+
+### Multi-horizon training with max-return labeling
+
+Replaced single-horizon (5d end-return) labels with max-return labels across three horizons [5d, 10d, 20d], each with its own signal classification head sharing a common LSTM backbone. At inference, a majority-vote consensus (2/3 horizons must agree on Buy or Sell) determines the final signal. The key insight: labeling with `max(close[t+1:t+h])` instead of `close[t+h]` eliminates a large source of noise — stocks that peak mid-horizon but retrace no longer get mislabeled as Hold. Longer horizons have naturally cleaner labels (20d at 78% val accuracy with near-zero train/val gap vs 42% previously). Test accuracy improvements: 5d 52.3%, 10d 66.7%, 20d 77.7% (was 40.5% for single horizon). Calibration spread across multiple buckets (vs 91% collapsing into 30-40% before). `ModelConfig` gains a `prediction_horizons` field so `SignalGenerator` and `Backtester` reconstruct the correct architecture at load time. `create_sequences` updated to accept a list of label arrays.
+
+---
+
 ## 2026-03-15 (session 4)
 
 ### Removed all 1h / multi-interval code

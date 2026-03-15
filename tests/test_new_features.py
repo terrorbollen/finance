@@ -271,10 +271,10 @@ class TestFeatureMismatch:
         bt.feature_std = np.ones(len(feature_columns))
         bt.input_dim = len(feature_columns)
         bt.model = MagicMock()
-        bt.model.predict.return_value = (
-            np.array([[0.8, 0.1, 0.1]]),
-            np.array([0]),
-            np.array([2.0]),
+        bt.model.predict.side_effect = lambda X: (
+            np.tile([0.8, 0.1, 0.1], (len(X), 1)),
+            np.zeros(len(X), dtype=int),
+            np.full(len(X), 2.0),
         )
         bt.metrics_calculator = MetricsCalculator()
         return bt
