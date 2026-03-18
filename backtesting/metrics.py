@@ -494,6 +494,9 @@ class MetricsCalculator:
             "strong_trend": lambda adx: adx >= 40,
         }
         result: dict[str, dict] = {}
+        no_adx = sum(1 for p in predictions if p.adx is None)
+        if no_adx > 0:
+            result["no_adx"] = {"n_predictions": no_adx}
         for name, condition in regimes.items():
             regime_preds = [p for p in predictions if p.adx is not None and condition(p.adx)]
             if not regime_preds:

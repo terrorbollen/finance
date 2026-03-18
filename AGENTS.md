@@ -49,7 +49,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | B11 | **Fix target-price lookup: row-index arithmetic breaks on data gaps.** In `backtester.py`, outcome prices are fetched with `features_df.iloc[idx + horizon]` — a row offset. If there are any missing trading days in the fetched data (yfinance occasionally drops sessions), `idx + horizon` lands on the wrong date. For a 5-day horizon, a single gap shifts every outcome price by one day, silently misstating every trade's P&L. Fix by storing the prediction's target date as `features_df.index[idx] + BDay(horizon)` at prediction time and looking up the close price by date, not row offset. | — | done |
 | B12 | **Calibration inconsistency: backtest reports raw probabilities, live signals use calibrated ones.** `Backtester` always calls `model.predict()` and uses the raw softmax confidence directly — the calibrator is never loaded in the backtest path. `SignalGenerator` applies isotonic calibration. This means win-rate-by-confidence buckets shown in backtest output are computed against uncalibrated scores, so they don't reflect what you'd actually trade on in production. Either apply calibration in the backtester (preferred) or make the discrepancy explicit in the output so users know the confidence column is pre-calibration. | `backtesting/backtester.py` | — | open |
 | B13 | **Retrain in walk-forward backtester doesn't refresh calibration.** When `retrain_every` is set, `_retrain_model()` updates `self.model`, `self.feature_mean`, and `self.feature_std` but never reloads or clears `self.calibrator`. The old calibrator (fitted on pre-cutoff data) keeps being applied to the newly retrained model, so confidence scores become increasingly miscalibrated across retraining windows. Fix: after every retrain, either refit the calibrator on recent backtest predictions or mark confidence as uncalibrated for the new window. | `backtesting/backtester.py` | — | open |
-| B14 | **ADX regime breakdown crashes when `adx` is None.** The regime breakdown calls `condition(p.adx)` where `condition = lambda v: v < 20`. If any `HorizonPrediction` has `adx = None` (possible on early rows before the ADX warmup period completes), this raises `TypeError`. The entire regime metrics section is lost for that backtest run. Fix: guard with `p.adx is not None` before classifying, and count/report predictions with missing ADX separately. | `backtesting/metrics.py` | — | open |
+| B14 | **ADX regime breakdown crashes when `adx` is None.** The regime breakdown calls `condition(p.adx)` where `condition = lambda v: v < 20`. If any `HorizonPrediction` has `adx = None` (possible on early rows before the ADX warmup period completes), this raises `TypeError`. The entire regime metrics section is lost for that backtest run. Fix: guard with `p.adx is not None` before classifying, and count/report predictions with missing ADX separately. | `backtesting/metrics.py` | — | done |
 
 ### Risk Management (`signals/`)
 
@@ -62,7 +62,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | R5 | Per-direction calibration (separate BUY/SELL/HOLD calibrators) | `signals/calibration.py`, `signals/generator.py` | — | done |
 | R6 | Portfolio-level risk limits (max drawdown cap, max position count) | `signals/generator.py` | — | done |
 | R7 | Expose directional calibration in `calibrate` CLI command (currently only fits the global calibrator) | `main.py` | — | done |
-| R8 | Add `get_calibration_table()` equivalent to `DirectionalCalibrator` for diagnostic display | `signals/calibration.py` | — | open |
+| R8 | Add `get_calibration_table()` equivalent to `DirectionalCalibrator` for diagnostic display | `signals/calibration.py` | — | done |
 
 ### Feature Engineering (`data/`)
 
@@ -72,9 +72,9 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | F2 | Cross-asset features (OMXS30 correlation, USD/SEK, EUR/SEK) | `data/features.py`, `data/fetcher.py` | — | done |
 | F3 | Calendar effects (day of week, month, earnings season) | `data/features.py` | — | done |
 | F8 | **Bollinger Band feature silently drops constant-price rows.** `_add_bb_position()` divides by `band_width.where(band_width > 0)`, producing NaN when the 20-bar rolling std is zero (constant price periods, trading halts, early data). Those rows are silently removed by `dropna()`, so the model never trains on low-volatility regimes and has no signal for them in live trading. Fix: when `band_width == 0`, set `bb_position = 0.5` (price at the midpoint of a flat band) rather than NaN. | `data/features.py` | — | done |
-| F4 | Volatility features (VIX/VSTOXX correlation) | `data/features.py`, `data/fetcher.py` | — | open |
-| F5 | Macro indicators (oil prices, interest rates) | `data/features.py`, `data/fetcher.py` | — | open |
-| F6 | **Out-of-distribution feature detection.** At inference time, if live features fall outside the training distribution (e.g. mean ± 3 std for any feature), warn the user. The training stats are already saved in `signal_model_config.json` (`feature_mean`, `feature_std`), so the check is cheap. Without this, a regime shift — e.g. extreme volatility, currency crisis, post-earnings gap — silently feeds the model inputs it has never seen, producing confident-looking signals that are actually extrapolation. The warning doesn't need to block the signal, just flag which features are out-of-range. | `signals/generator.py` | — | open |
+| F4 | Volatility features (VIX/VSTOXX correlation) | `data/features.py`, `data/fetcher.py` | — | done |
+| F5 | Macro indicators (oil prices, interest rates) | `data/features.py`, `data/fetcher.py` | Claude | in_progress |
+| F6 | **Out-of-distribution feature detection.** At inference time, if live features fall outside the training distribution (e.g. mean ± 3 std for any feature), warn the user. The training stats are already saved in `signal_model_config.json` (`feature_mean`, `feature_std`), so the check is cheap. Without this, a regime shift — e.g. extreme volatility, currency crisis, post-earnings gap — silently feeds the model inputs it has never seen, producing confident-looking signals that are actually extrapolation. The warning doesn't need to block the signal, just flag which features are out-of-range. | `signals/generator.py` | Claude | in_progress |
 | F7 | **Feature mismatch should be a hard error, not a silent tolerance.** Both `backtester.py` and `generator.py` have a `> 10% missing features → raise, otherwise warn and continue` pattern. This is the wrong tradeoff: a model trained on 37 features receiving 33 produces unpredictably degraded predictions with no indication in the output. Change the threshold to zero tolerance: if any feature from `feature_columns` is missing, raise immediately and name the missing columns. The only acceptable exception is during development when intentionally testing a partial feature set — which should require an explicit flag, not a silent fallback. | `backtesting/backtester.py`, `signals/generator.py` | — | open |
 
 ### Model Improvements (`models/`)
@@ -137,8 +137,8 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 
 | Module | Files | Current owner |
 |--------|-------|---------------|
-| `data/` | `data/fetcher.py`, `data/features.py` | — |
+| `data/` | `data/fetcher.py`, `data/features.py` | Claude |
 | `models/` | `models/signal_model.py`, `models/training.py`, `models/walk_forward.py`, `models/mlflow_tracking.py` | — |
-| `signals/` | `signals/generator.py`, `signals/calibration.py` | — |
+| `signals/` | `signals/generator.py`, `signals/calibration.py` | Claude |
 | `backtesting/` | `backtesting/backtester.py`, `backtesting/metrics.py`, `backtesting/results.py`, `backtesting/portfolio.py` | Claude |
 | `main.py` | `main.py` | Claude |

@@ -327,6 +327,30 @@ class DirectionalCalibrator:
             return self.calibrators[direction].calibrate(raw_confidence)
         return raw_confidence
 
+    def get_calibration_table(self) -> str:
+        """Get a formatted table showing the calibration mapping for each direction."""
+        if not self.is_fitted:
+            return "Directional calibrator not fitted"
+
+        sections = []
+        for direction in self.DIRECTIONS:
+            if self.is_fitted_for(direction):
+                cal = self.calibrators[direction]
+                header = f"  {direction}"
+                lines = [header, "  " + "-" * 50]
+                lines.append(f"  {'Raw Range':<20} {'Calibrated':<15} {'Samples':<10}")
+                lines.append("  " + "-" * 50)
+                for bucket in cal.buckets:
+                    raw_range = f"{bucket.raw_min * 100:.0f}%-{bucket.raw_max * 100:.0f}%"
+                    lines.append(
+                        f"  {raw_range:<20} {bucket.calibrated * 100:.1f}%{'':<9} {bucket.sample_count:<10}"
+                    )
+                sections.append("\n".join(lines))
+            else:
+                sections.append(f"  {direction}: not fitted (insufficient samples)")
+
+        return "\n\n".join(sections)
+
     def staleness_warning(self, max_days: int = 30) -> str | None:
         """Return a warning if any fitted direction calibrator is stale, else None."""
         for cal in self.calibrators.values():
@@ -344,6 +368,7 @@ class DirectionalCalibrator:
                     "num_buckets": cal.num_buckets,
                     "min_samples_per_bucket": cal.min_samples_per_bucket,
                     "is_fitted": cal.is_fitted,
+                    "fitted_at": cal.fitted_at.isoformat() if cal.fitted_at else None,
                     "buckets": [
                         {
                             "raw_min": b.raw_min,
@@ -372,6 +397,8 @@ class DirectionalCalibrator:
             cal = ConfidenceCalibrator(num_buckets=cal_data["num_buckets"])
             cal.min_samples_per_bucket = cal_data["min_samples_per_bucket"]
             cal.is_fitted = cal_data["is_fitted"]
+            raw_ts = cal_data.get("fitted_at")
+            cal.fitted_at = datetime.fromisoformat(raw_ts) if raw_ts else None
             cal.buckets = [
                 CalibrationBucket(
                     raw_min=b["raw_min"],

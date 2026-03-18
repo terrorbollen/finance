@@ -15,6 +15,11 @@ EXPECTED_FEATURES = [
     "bb_position",
     "volume_ratio",
     "adx_14",
+    "vix_level",
+    "vix_1d_change",
+    "vix_stock_corr",
+    "vstoxx_level",
+    "vstoxx_1d_change",
 ]
 
 
@@ -66,7 +71,7 @@ class TestFeatureEngineer:
         eng = FeatureEngineer(sample_ohlcv_data)
         eng.add_all_features()
         arr = eng.get_features_array()
-        assert arr.shape == (len(eng.df), 8)
+        assert arr.shape == (len(eng.df), len(EXPECTED_FEATURES))
 
 
 class TestRSI:

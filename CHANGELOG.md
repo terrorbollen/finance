@@ -4,6 +4,30 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18 (session 16)
+
+### Report ADX-missing predictions in regime breakdown (B14)
+
+`_calculate_regime_metrics()` in `metrics.py` already guarded against `adx = None` with a `p.adx is not None` filter, so the crash was already prevented. Added the missing reporting piece: if any predictions have no ADX value (common on the first ~14 bars before the ADX warmup completes), a `"no_adx"` entry is now included in the returned `regime_metrics` dict with an `n_predictions` count. The `summary()` display in `results.py` is updated to render this count rather than crashing on the missing `n_trades` key.
+
+---
+
+## 2026-03-18 (session 15)
+
+### Add VIX/VSTOXX volatility regime features (F4)
+
+`fetch_cross_asset_data()` in `fetcher.py` now also fetches VIX (`^VIX`) and VSTOXX (`^V2TX`) alongside the existing OMXS30/FX series. `FeatureEngineer` now stores `reference_data` (previously discarded) and a new `_add_volatility_features()` method produces five new columns: `vix_level` and `vstoxx_level` (current vol index normalised by its 252-day rolling mean — >1 means elevated fear), `vix_1d_change` and `vstoxx_1d_change` (daily % change, capturing sudden regime shifts), and `vix_stock_corr` (20-day rolling correlation between stock returns and VIX changes — negative values identify risk-off stocks). When VIX/VSTOXX data is unavailable, all columns fall back to neutral constants so `dropna()` does not discard rows. Retraining required to incorporate the 5 new features (input_dim changes from 8 to 13).
+
+---
+
+## 2026-03-18 (session 14)
+
+### Add `get_calibration_table()` to `DirectionalCalibrator` (R8)
+
+`DirectionalCalibrator` now has `get_calibration_table()` mirroring the same method on `ConfidenceCalibrator`. It renders one indented table per direction (BUY / SELL / HOLD), with a "not fitted" note for any direction that lacked sufficient samples. This is already called by `_run_calibration()` in `main.py` (added in R7) so the output now uses the proper method rather than ad-hoc formatting. Also fixed a latent bug in `DirectionalCalibrator.save()` / `load()`: the `fitted_at` timestamp was not being persisted per sub-calibrator, so the staleness warning introduced in B8 would always fire for directional calibrators loaded from disk. Now `fitted_at` is included in the per-direction JSON payload and restored on load.
+
+---
+
 ## 2026-03-18 (session 12)
 
 ### Calibration staleness warning (B8)

@@ -374,7 +374,13 @@ class BacktestResult:
             win_ci = f"[{m.win_rate_ci[0]*100:.1f}%, {m.win_rate_ci[1]*100:.1f}%]" if m.win_rate_ci != (0.0, 0.0) else "N/A"
             sharpe_ci = f"[{m.sharpe_ci[0]:.2f}, {m.sharpe_ci[1]:.2f}]" if m.sharpe_ci != (0.0, 0.0) else "N/A"
             bh_str = f"{m.bh_corrected_pvalue:.3f}"
-            regime_str = ", ".join(f"{k}:{v['n_trades']}t" for k, v in m.regime_metrics.items()) if m.regime_metrics else "N/A (no ADX)"
+            regime_parts = [
+                f"{k}:{v['n_trades']}t" for k, v in m.regime_metrics.items() if "n_trades" in v
+            ]
+            no_adx = m.regime_metrics.get("no_adx", {}).get("n_predictions", 0)
+            if no_adx:
+                regime_parts.append(f"no_adx:{no_adx}")
+            regime_str = ", ".join(regime_parts) if regime_parts else "N/A (no ADX)"
             lines.append(f"{horizon}-day{'':<5} {m.brier_score:.3f}   {m.ece:.3f}   {win_ci:<20} {sharpe_ci:<20} {bh_str:<10} {regime_str}")
         lines.extend(["", "MONTE CARLO SIMULATION (trade-order permutations)"])
         lines.append("-" * 80)

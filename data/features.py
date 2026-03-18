@@ -18,12 +18,14 @@ class FeatureEngineer:
 
         Args:
             df: DataFrame with columns: open, high, low, close, volume
-            reference_data: Unused — kept for interface compatibility.
+            reference_data: Optional cross-asset reference data (OMXS30, FX, VIX, VSTOXX).
+                            Keys: "omxs30", "usdsek", "eursek", "vix", "vstoxx".
         """
         self.df = df.copy()
+        self.reference_data = reference_data or {}
 
     def add_all_features(self) -> pd.DataFrame:
-        """Compute all 8 features and return the enriched DataFrame."""
+        """Compute all features and return the enriched DataFrame."""
         self._add_rsi()
         self._add_macd_histogram()
         self._add_momentum()
@@ -32,6 +34,7 @@ class FeatureEngineer:
         self._add_bb_position()
         self._add_volume_ratio()
         self._add_adx()
+        self._add_volatility_features()
 
         self.df = self.df.dropna()
         return self.df
@@ -129,6 +132,48 @@ class FeatureEngineer:
 
         dx = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus)).fillna(0)
         self.df["adx_14"] = dx.ewm(alpha=alpha, adjust=False).mean()
+
+    def _add_volatility_features(self, corr_window: int = 20) -> None:
+        """VIX and VSTOXX volatility regime features.
+
+        Uses VIX (global fear gauge) and VSTOXX (European volatility index,
+        more relevant for Swedish stocks) from reference_data if available.
+        Falls back gracefully to neutral values when data is missing.
+
+        Features added:
+            vix_level      — VIX close normalised by its 252-day rolling mean,
+                             so values >1 mean elevated fear relative to recent history.
+            vix_1d_change  — Daily % change in VIX: captures sudden regime shifts.
+            vix_stock_corr — 20-day rolling correlation between stock daily returns
+                             and VIX daily changes: negative = risk-off stock (moves
+                             against fear), positive = fear-amplified stock.
+            vstoxx_level   — Same normalisation applied to VSTOXX (European vol index).
+        """
+        stock_returns = self.df["close"].pct_change()
+
+        for key, col_prefix in (("vix", "vix"), ("vstoxx", "vstoxx")):
+            ref = self.reference_data.get(key)
+            if ref is None or ref.empty or (ref["close"] == 0).all():
+                # No data available — fill with neutral values so dropna() keeps the rows.
+                self.df[f"{col_prefix}_level"] = 1.0
+                self.df[f"{col_prefix}_1d_change"] = 0.0
+                if col_prefix == "vix":
+                    self.df["vix_stock_corr"] = 0.0
+                continue
+
+            vol_close = ref["close"].reindex(self.df.index).ffill().bfill()
+
+            # Normalised level: current / 252-day rolling mean (>1 = elevated fear)
+            rolling_mean = vol_close.rolling(window=252, min_periods=20).mean()
+            self.df[f"{col_prefix}_level"] = (vol_close / rolling_mean.where(rolling_mean > 0, 1.0)).clip(0, 5)
+
+            # Daily % change in volatility index
+            self.df[f"{col_prefix}_1d_change"] = vol_close.pct_change() * 100
+
+            # Rolling correlation between stock returns and vol-index changes (VIX only)
+            if col_prefix == "vix":
+                vol_changes = vol_close.pct_change()
+                self.df["vix_stock_corr"] = stock_returns.rolling(window=corr_window, min_periods=10).corr(vol_changes)
 
     # ------------------------------------------------------------------
     # Accessors
