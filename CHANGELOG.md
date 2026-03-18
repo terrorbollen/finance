@@ -4,6 +4,33 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18 (session 8)
+
+### Backtest plot (`backtesting/plot.py`)
+
+New `plot_backtest()` function renders a two-panel figure after any backtest run: price line with BUY/SELL/HOLD signal markers (sized and shaded by confidence) on top, and equity curves for all horizons vs buy-and-hold on the bottom. Activated via `--plot [FILE]` on the `backtest` command — omitting a filename saves to `tmp/<TICKER>_backtest.png`. Signal markers use per-signal colour gradients (pale = low confidence, saturated = high confidence) so both direction and conviction are readable at a glance.
+
+### Multi-horizon signal design finding documented
+
+Discovered that `SignalModel.predict()` collapses all per-horizon heads into a single majority-vote consensus before returning, so the backtester assigns identical signals to every horizon entry. The different equity curves per horizon are purely a holding-period effect, not evidence of different per-horizon signal quality. Documented as tasks M4 and B10 in `AGENTS.md` — fixing this requires exposing raw per-horizon outputs from the model before the backtester can make genuine per-horizon comparisons.
+
+### Backtest validation diagnostics
+
+Added a **VALIDATION DIAGNOSTICS** section to every backtest summary, covering metrics that are essential before trusting results in live trading:
+
+- **Brier score** — multi-class calibration quality of softmax outputs (uses full `[p_buy, p_hold, p_sell]` now stored in `HorizonPrediction.all_probs`)
+- **ECE** — Expected Calibration Error, computed from existing calibration buckets
+- **Bootstrap 95% CIs** — on win rate, Sharpe ratio, and net return (500 resamples, seeded for reproducibility)
+- **Benjamini-Hochberg FDR correction** — p-values corrected across all horizons to control false discovery when testing 7 horizons simultaneously
+- **Regime breakdown** — accuracy and trade count split by ADX regime (ranging <20, trending 20–40, strong >40)
+- **Per-trade records** — `TradeRecord` dataclass stored in `HorizonMetrics.trades`, exportable via `BacktestResult.export_trades_csv()`
+- **ROC/AUC** — one-vs-rest AUC per signal class, stored in `HorizonMetrics.roc_auc` (requires `all_probs`)
+- **Monthly accuracy** — stored in `HorizonMetrics.temporal_accuracy` to spot regime-dependent performance
+
+`CONTRIBUTIONS.md` updated with a reference table explaining each diagnostic and what constitutes a red flag.
+
+---
+
 ## 2026-03-15 (session 7)
 
 ### ADX regime filter and pre-2025 holdout retraining

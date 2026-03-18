@@ -19,6 +19,21 @@ from models.config import FETCH_PERIOD, ModelConfig
 from models.signal_model import SignalModel
 
 
+def _bh_correction(pvalues: list[float]) -> list[float]:
+    """Benjamini-Hochberg FDR correction for a list of p-values."""
+    n = len(pvalues)
+    if n == 0:
+        return []
+    indexed = sorted(enumerate(pvalues), key=lambda x: x[1])
+    corrected = [1.0] * n
+    for rank, (orig_idx, pval) in enumerate(indexed, 1):
+        corrected[orig_idx] = min(1.0, pval * n / rank)
+    # Enforce monotonicity (corrected p-values must be non-decreasing in rank order)
+    for i in range(len(indexed) - 2, -1, -1):
+        corrected[indexed[i][0]] = min(corrected[indexed[i][0]], corrected[indexed[i + 1][0]])
+    return corrected
+
+
 class Backtester:
     """
     Backtesting engine that runs the model on historical data.
@@ -255,7 +270,9 @@ class Backtester:
 
             direction_idx = int(signal_classes_all[i])
             predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
-            confidence = float(signal_probs_all[i][direction_idx])
+            probs_row = signal_probs_all[i]
+            confidence = float(probs_row[direction_idx])
+            all_probs = (float(probs_row[0]), float(probs_row[1]), float(probs_row[2]))
             predicted_change = float(price_targets_all[i])
             rv = float(rel_vols[idx]) if rel_vols is not None else float("nan")
             relative_volume = None if (rel_vols is None or np.isnan(rv)) else rv
@@ -272,6 +289,7 @@ class Backtester:
                     predicted_price_change=predicted_change,
                     relative_volume=relative_volume,
                     adx=adx,
+                    all_probs=all_probs,
                 ))
             daily_predictions.append(daily_pred)
 
@@ -298,6 +316,13 @@ class Backtester:
             horizon_metrics[horizon] = self.metrics_calculator.calculate_horizon_metrics(
                 predictions, horizon
             )
+
+        # Apply Benjamini-Hochberg FDR correction across horizons
+        sorted_horizons = sorted(horizon_metrics.keys())
+        raw_pvalues = [horizon_metrics[h].win_rate_pvalue for h in sorted_horizons]
+        corrected = _bh_correction(raw_pvalues)
+        for h, bh_pval in zip(sorted_horizons, corrected):
+            horizon_metrics[h].bh_corrected_pvalue = bh_pval
 
         return BacktestResult(
             ticker=ticker,

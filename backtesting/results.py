@@ -28,6 +28,9 @@ class HorizonPrediction:
     # ADX(14) on the prediction date — used for regime filtering (None if unavailable)
     adx: float | None = None
 
+    # Full softmax output [p_buy, p_hold, p_sell] (None if not available)
+    all_probs: tuple[float, float, float] | None = None  # [p_buy, p_hold, p_sell]
+
     @property
     def is_correct(self) -> bool | None:
         """Check if the predicted signal matches the actual outcome."""
@@ -48,6 +51,7 @@ class HorizonPrediction:
             "is_correct": self.is_correct,
             "relative_volume": self.relative_volume,
             "adx": self.adx,
+            "all_probs": list(self.all_probs) if self.all_probs is not None else None,
         }
 
 
@@ -87,6 +91,25 @@ class ClassMetrics:
 
 
 @dataclass
+class TradeRecord:
+    """Single simulated trade outcome."""
+    date: date
+    signal: Signal
+    gross_pct: float
+    net_pct: float
+    is_winner: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "date": self.date.isoformat(),
+            "signal": self.signal.name,
+            "gross_pct": self.gross_pct,
+            "net_pct": self.net_pct,
+            "is_winner": self.is_winner,
+        }
+
+
+@dataclass
 class HorizonMetrics:
     """Aggregated metrics for a single prediction horizon."""
 
@@ -121,6 +144,28 @@ class HorizonMetrics:
     # Equity curve: sorted (date, cumulative_net_return_pct) pairs
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
 
+    # Calibration quality
+    brier_score: float = 0.0
+    ece: float = 0.0  # Expected Calibration Error
+
+    # Per-class ROC AUC (one-vs-rest)
+    roc_auc: dict[Signal, float] = field(default_factory=dict)
+
+    # Bootstrap 95% confidence intervals
+    sharpe_ci: tuple[float, float] = (0.0, 0.0)
+    win_rate_ci: tuple[float, float] = (0.0, 0.0)
+    net_return_ci: tuple[float, float] = (0.0, 0.0)
+
+    # Temporal and regime breakdowns
+    temporal_accuracy: list[tuple[date, float]] = field(default_factory=list)  # (month_start, accuracy)
+    regime_metrics: dict[str, dict] = field(default_factory=dict)  # ADX regime → metrics
+
+    # Per-trade records
+    trades: list[TradeRecord] = field(default_factory=list)
+
+    # Benjamini-Hochberg FDR-corrected p-value (set by BacktestResult after all horizons computed)
+    bh_corrected_pvalue: float = 1.0
+
     def to_dict(self) -> dict:
         return {
             "horizon_days": self.horizon_days,
@@ -141,6 +186,16 @@ class HorizonMetrics:
             "low_sample": self.low_sample,
             "win_rate_pvalue": self.win_rate_pvalue,
             "equity_curve": [(d.isoformat(), v) for d, v in self.equity_curve],
+            "brier_score": self.brier_score,
+            "ece": self.ece,
+            "roc_auc": {s.name: v for s, v in self.roc_auc.items()},
+            "sharpe_ci": list(self.sharpe_ci),
+            "win_rate_ci": list(self.win_rate_ci),
+            "net_return_ci": list(self.net_return_ci),
+            "temporal_accuracy": [(d.isoformat(), v) for d, v in self.temporal_accuracy],
+            "regime_metrics": self.regime_metrics,
+            "trades": [t.to_dict() for t in self.trades],
+            "bh_corrected_pvalue": self.bh_corrected_pvalue,
         }
 
 
@@ -254,6 +309,19 @@ class BacktestResult:
         if self.benchmark_return is not None:
             lines.append(f"Index      (OMXS30):          {self.benchmark_return:+.2f}%")
         lines.append("(Strategy net returns shown per horizon in table above)")
+
+        lines.append("")
+        lines.append("VALIDATION DIAGNOSTICS")
+        lines.append("-" * 80)
+        lines.append(f"{'Horizon':<10} {'Brier':<8} {'ECE':<8} {'Win CI (95%)':<20} {'Sharpe CI (95%)':<20} {'BH p-val':<10} {'Regime coverage'}")
+        lines.append("-" * 80)
+        for horizon in sorted(self.horizon_metrics.keys()):
+            m = self.horizon_metrics[horizon]
+            win_ci = f"[{m.win_rate_ci[0]*100:.1f}%, {m.win_rate_ci[1]*100:.1f}%]" if m.win_rate_ci != (0.0, 0.0) else "N/A"
+            sharpe_ci = f"[{m.sharpe_ci[0]:.2f}, {m.sharpe_ci[1]:.2f}]" if m.sharpe_ci != (0.0, 0.0) else "N/A"
+            bh_str = f"{m.bh_corrected_pvalue:.3f}"
+            regime_str = ", ".join(f"{k}:{v['n_trades']}t" for k, v in m.regime_metrics.items()) if m.regime_metrics else "N/A (no ADX)"
+            lines.append(f"{horizon}-day{'':<5} {m.brier_score:.3f}   {m.ece:.3f}   {win_ci:<20} {sharpe_ci:<20} {bh_str:<10} {regime_str}")
         lines.append("=" * 80)
 
         return "\n".join(lines)
@@ -292,6 +360,18 @@ class BacktestResult:
             writer.writerow(["date", "cumulative_net_return_pct"])
             for dt, value in metrics.equity_curve:
                 writer.writerow([dt.isoformat(), value])
+
+    def export_trades_csv(self, path: str) -> None:
+        """Export per-trade records for all horizons to CSV."""
+        import csv
+
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["horizon_days", "date", "signal", "gross_pct", "net_pct", "is_winner"])
+            for h, m in sorted(self.horizon_metrics.items()):
+                for t in m.trades:
+                    writer.writerow([h, t.date.isoformat(), t.signal.name,
+                                      round(t.gross_pct, 4), round(t.net_pct, 4), t.is_winner])
 
     def export_csv(self, path: str):
         """Export predictions to CSV file."""

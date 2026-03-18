@@ -57,6 +57,7 @@ uv run python main.py history --ticker VOLV-B.ST
 
 A change is worth keeping if **Sharpe and NetRet both improve**. Accuracy alone can be misleading.
 
+
 ## Finishing up
 
 1. Run `ruff` and `mypy` — both clean.

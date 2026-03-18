@@ -1,6 +1,7 @@
 """Metrics calculation for backtesting results."""
 
 import math
+from collections import defaultdict
 from datetime import date
 from typing import TypedDict
 
@@ -12,6 +13,7 @@ from backtesting.results import (
     HorizonMetrics,
     HorizonPrediction,
     Signal,
+    TradeRecord,
 )
 
 
@@ -29,6 +31,10 @@ class TradingMetrics(TypedDict):
     low_sample: bool
     win_rate_pvalue: float
     equity_curve: list[tuple[date, float]]
+    sharpe_ci: tuple[float, float]
+    win_rate_ci: tuple[float, float]
+    net_return_ci: tuple[float, float]
+    trades: list  # list[TradeRecord] — typed as list to avoid circular import
 
 # Maximum per-trade slippage cost as a percentage (0.5%)
 _MAX_SLIPPAGE_PCT = 0.5
@@ -112,7 +118,7 @@ class MetricsCalculator:
         # Calculate simulated trading returns
         trading = self._calculate_trading_metrics(completed, horizon=horizon)
 
-        return HorizonMetrics(
+        metrics = HorizonMetrics(
             horizon_days=horizon,
             total_predictions=len(completed),
             accuracy=accuracy,
@@ -122,6 +128,15 @@ class MetricsCalculator:
             price_rmse=price_rmse,
             **trading,
         )
+
+        # Additional validation diagnostics
+        metrics.brier_score = self._calculate_brier_score(completed)
+        metrics.ece = self._calculate_ece(calibration, completed)
+        metrics.roc_auc = self._calculate_roc_auc(completed)
+        metrics.temporal_accuracy = self._calculate_temporal_accuracy(completed)
+        metrics.regime_metrics = self._calculate_regime_metrics(completed)
+
+        return metrics
 
     def _calculate_accuracy(self, predictions: list[HorizonPrediction]) -> float:
         """Calculate overall signal accuracy."""
@@ -256,6 +271,7 @@ class MetricsCalculator:
         gross_returns: list[float] = []
         net_returns: list[float] = []
         equity_points: list[tuple[date, float]] = []  # (prediction_date, net_return)
+        trades_list: list = []
         # Commission and slippage apply to the full leveraged notional
         round_trip_cost = 2 * self.commission_pct * self.leverage * 100
 
@@ -285,6 +301,13 @@ class MetricsCalculator:
             net = gross - round_trip_cost - slippage_cost
             net_returns.append(net)
             equity_points.append((p.prediction_date, net))
+            trades_list.append(TradeRecord(
+                date=p.prediction_date,
+                signal=p.predicted_signal,
+                gross_pct=round(gross, 4),
+                net_pct=round(net, 4),
+                is_winner=(net > 0),
+            ))
 
         empty: TradingMetrics = {
             "win_rate": 0.0,
@@ -298,6 +321,10 @@ class MetricsCalculator:
             "low_sample": True,
             "win_rate_pvalue": 1.0,
             "equity_curve": [],
+            "sharpe_ci": (0.0, 0.0),
+            "win_rate_ci": (0.0, 0.0),
+            "net_return_ci": (0.0, 0.0),
+            "trades": [],
         }
         if not gross_returns:
             return empty
@@ -308,6 +335,21 @@ class MetricsCalculator:
 
         # Binomial test: is win rate significantly above 50% chance?
         pvalue = float(stats.binomtest(wins, trade_count, p=0.5, alternative="greater").pvalue)
+
+        # Bootstrap 95% confidence intervals
+        def _sharpe_fn(arr: np.ndarray) -> float:
+            s = float(np.std(arr, ddof=1))
+            return float((np.mean(arr) / s) * np.sqrt(252)) if s > 1e-8 else 0.0
+
+        sharpe_ci = self._bootstrap_ci(net_returns, _sharpe_fn)
+        win_rate_ci = self._bootstrap_ci(
+            net_returns,
+            lambda arr: float(np.sum(arr > 0) / len(arr)),
+        )
+        net_return_ci = self._bootstrap_ci(
+            net_returns,
+            lambda arr: float(np.sum(arr)),
+        )
 
         # Build equity curve: cumulative net returns sorted chronologically
         equity_points.sort(key=lambda x: x[0])
@@ -329,7 +371,141 @@ class MetricsCalculator:
             "low_sample": trade_count < MIN_TRADES_FOR_RELIABILITY,
             "win_rate_pvalue": pvalue,
             "equity_curve": equity_curve,
+            "sharpe_ci": sharpe_ci,
+            "win_rate_ci": win_rate_ci,
+            "net_return_ci": net_return_ci,
+            "trades": trades_list,
         }
+
+    def _bootstrap_ci(
+        self,
+        values: list[float],
+        stat_fn,
+        n_boot: int = 500,
+    ) -> tuple[float, float]:
+        """95% bootstrap confidence interval for a statistic."""
+        if len(values) < 5:
+            return (0.0, 0.0)
+        rng = np.random.default_rng(42)
+        arr = np.array(values)
+        n = len(arr)
+        boot_stats = sorted(
+            stat_fn(arr[rng.integers(0, n, size=n)]) for _ in range(n_boot)
+        )
+        return (boot_stats[int(0.025 * n_boot)], boot_stats[int(0.975 * n_boot)])
+
+    def _calculate_brier_score(self, predictions: list[HorizonPrediction]) -> float:
+        """Multi-class Brier score. Uses all_probs if available, else falls back to confidence."""
+        signal_to_idx = {Signal.BUY: 0, Signal.HOLD: 1, Signal.SELL: 2}
+        total = 0.0
+        n = 0
+        for p in predictions:
+            if p.actual_signal is None:
+                continue
+            actual_idx = signal_to_idx[p.actual_signal]
+            if p.all_probs is not None:
+                probs = p.all_probs
+            else:
+                # Fallback: confidence on predicted class, remainder split equally
+                pred_idx = signal_to_idx[p.predicted_signal]
+                remainder = (1.0 - p.confidence) / 2.0
+                probs_list = [remainder, remainder, remainder]
+                probs_list[pred_idx] = p.confidence
+                probs = (probs_list[0], probs_list[1], probs_list[2])
+            one_hot = [1.0 if i == actual_idx else 0.0 for i in range(3)]
+            total += sum((probs[i] - one_hot[i]) ** 2 for i in range(3))
+            n += 1
+        return total / n if n > 0 else 0.0
+
+    def _calculate_ece(
+        self,
+        calibration: dict[str, float],
+        predictions: list[HorizonPrediction],
+    ) -> float:
+        """Expected Calibration Error: weighted mean |accuracy - avg_confidence| per bucket."""
+        bucket_ranges = {
+            "50-60%": (0.50, 0.60), "60-70%": (0.60, 0.70),
+            "70-80%": (0.70, 0.80), "80-90%": (0.80, 0.90), "90-100%": (0.90, 1.01),
+        }
+        n = len(predictions)
+        if n == 0:
+            return 0.0
+        ece = 0.0
+        for bucket_name, actual_acc in calibration.items():
+            lo, hi = bucket_ranges[bucket_name]
+            bucket_preds = [p for p in predictions if lo <= p.confidence < hi]
+            if bucket_preds:
+                avg_conf = float(np.mean([p.confidence for p in bucket_preds]))
+                ece += (len(bucket_preds) / n) * abs(actual_acc - avg_conf)
+        return ece
+
+    def _calculate_roc_auc(self, predictions: list[HorizonPrediction]) -> dict[Signal, float]:
+        """One-vs-rest ROC AUC per signal class. Requires all_probs to be set."""
+        from sklearn.metrics import roc_auc_score
+
+        preds = [p for p in predictions if p.all_probs is not None and p.actual_signal is not None]
+        if len(preds) < 10:
+            return {}
+
+        signal_to_idx = {Signal.BUY: 0, Signal.HOLD: 1, Signal.SELL: 2}
+        result: dict[Signal, float] = {}
+        for signal in Signal:
+            idx = signal_to_idx[signal]
+            y_true = [1 if p.actual_signal == signal else 0 for p in preds]
+            if sum(y_true) == 0 or sum(y_true) == len(y_true):
+                continue
+            y_score = [p.all_probs[idx] for p in preds]  # type: ignore[index]
+            try:
+                result[signal] = float(roc_auc_score(y_true, y_score))
+            except Exception:
+                pass
+        return result
+
+    def _calculate_temporal_accuracy(
+        self, predictions: list[HorizonPrediction]
+    ) -> list[tuple[date, float]]:
+        """Monthly accuracy: (first_of_month, accuracy) sorted chronologically."""
+        monthly: dict[tuple[int, int], list[bool]] = defaultdict(list)
+        for p in predictions:
+            if p.is_correct is not None:
+                monthly[(p.prediction_date.year, p.prediction_date.month)].append(p.is_correct)
+        return [
+            (date(y, m, 1), sum(correct) / len(correct))
+            for (y, m), correct in sorted(monthly.items())
+            if correct
+        ]
+
+    def _calculate_regime_metrics(
+        self, predictions: list[HorizonPrediction]
+    ) -> dict[str, dict]:
+        """Split accuracy and win rate by ADX regime (ranging <20, trending 20-40, strong >40)."""
+        regimes = {
+            "ranging": lambda adx: adx < 20,
+            "trending": lambda adx: 20 <= adx < 40,
+            "strong_trend": lambda adx: adx >= 40,
+        }
+        result: dict[str, dict] = {}
+        for name, condition in regimes.items():
+            regime_preds = [p for p in predictions if p.adx is not None and condition(p.adx)]
+            if not regime_preds:
+                continue
+            accuracy = sum(1 for p in regime_preds if p.is_correct) / len(regime_preds)
+            trades = [
+                p for p in regime_preds
+                if p.predicted_signal != Signal.HOLD and p.actual_price_change is not None
+            ]
+            wins = sum(
+                1 for p in trades
+                if (p.predicted_signal == Signal.BUY and p.actual_price_change > 0)
+                or (p.predicted_signal == Signal.SELL and p.actual_price_change < 0)
+            )
+            result[name] = {
+                "accuracy": round(accuracy, 4),
+                "win_rate": round(wins / len(trades), 4) if trades else 0.0,
+                "n_predictions": len(regime_preds),
+                "n_trades": len(trades),
+            }
+        return result
 
     def _calculate_risk_metrics(
         self, returns_pct: list[float]
