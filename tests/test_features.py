@@ -128,6 +128,26 @@ class TestBBPosition:
         within = ((bp >= -0.5) & (bp <= 1.5)).mean()
         assert within > 0.9
 
+    def test_constant_price_yields_midpoint(self):
+        """When all prices are identical the band collapses to zero width; bb_position must be 0.5, not NaN."""
+        dates = pd.date_range("2023-01-02", periods=40, freq="B")
+        df = pd.DataFrame(
+            {
+                "open": 100.0,
+                "high": 100.0,
+                "low": 100.0,
+                "close": 100.0,
+                "volume": 1000,
+            },
+            index=dates,
+        )
+        eng = FeatureEngineer(df)
+        eng._add_bb_position()
+        bp = eng.df["bb_position"]
+        # All values should be exactly 0.5 — no NaNs produced for constant-price rows
+        assert bp.notna().all()
+        assert bp.eq(0.5).all()
+
 
 class TestVolumeRatio:
     def test_positive(self, sample_ohlcv_data):

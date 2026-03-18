@@ -88,7 +88,7 @@ class FeatureEngineer:
         bb_upper = sma + std * std_dev
         bb_lower = sma - std * std_dev
         band_width = bb_upper - bb_lower
-        self.df["bb_position"] = (self.df["close"] - bb_lower) / band_width.where(band_width > 0)
+        self.df["bb_position"] = (self.df["close"] - bb_lower).where(band_width > 0, 0.5) / band_width.where(band_width > 0, 1.0)
 
     def _add_volume_ratio(self, period: int = 20) -> None:
         """Current volume relative to its rolling average, clipped at 10x.

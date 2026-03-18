@@ -22,6 +22,16 @@ from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
 from signals.generator import SignalGenerator
 
 
+def _check_calibration_staleness(generator: SignalGenerator, max_days: int = 30) -> None:
+    """Print a warning to stderr if the loaded calibrator is stale."""
+    cal = generator.directional_calibrator or generator.calibrator
+    if cal is None:
+        return
+    warning = cal.staleness_warning(max_days)
+    if warning:
+        print(f"Warning: {warning}", file=sys.stderr)
+
+
 def cmd_analyze(args):
     """Analyze a single ticker and generate a signal."""
     print(f"\nAnalyzing {args.ticker}...")
@@ -32,6 +42,7 @@ def cmd_analyze(args):
         calibration_path=paths["calibration"],
         min_confidence=args.min_confidence,
     )
+    _check_calibration_staleness(generator)
     try:
         signal = generator.generate(args.ticker)
         print(signal)
@@ -53,6 +64,7 @@ def cmd_scan(args):
         calibration_path=paths["calibration"],
         min_confidence=args.min_confidence,
     )
+    _check_calibration_staleness(generator)
     signals = generator.scan(tickers)
 
     if not signals:

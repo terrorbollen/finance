@@ -4,6 +4,30 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18 (session 12)
+
+### Calibration staleness warning (B8)
+
+`ConfidenceCalibrator` now records `fitted_at` (a UTC datetime) when `fit()` is called and persists it in the JSON file. `load()` restores it; files written before this change will have `fitted_at = None`. A new `staleness_warning(max_days=30)` method returns a human-readable warning string if the calibrator is older than the threshold, or if `fitted_at` is missing (which also means the age is unknown and should prompt a recalibrate). `DirectionalCalibrator` gets the same method, delegating to the oldest fitted sub-calibrator. In `main.py`, a new `_check_calibration_staleness()` helper is called in both `cmd_analyze` and `cmd_scan` immediately after the `SignalGenerator` is built; it prints to stderr so the warning is visible even when output is piped. This prevents silently trading on a calibrator trained on a market regime months in the past.
+
+---
+
+## 2026-03-18 (session 13)
+
+### Fix Bollinger Band feature dropping constant-price rows (F8)
+
+`_add_bb_position()` in `data/features.py` was dividing by `band_width.where(band_width > 0)`, which produces NaN when the 20-bar rolling std is zero. Those NaN rows were silently removed by `dropna()`, so the model never saw low-volatility regimes (trading halts, early thin data). Fixed by substituting `0.5` (midpoint of a degenerate flat band) when `band_width == 0` rather than propagating NaN.
+
+---
+
+## 2026-03-18 (session 12)
+
+### Fix target-price lookup: date arithmetic replaces row-offset arithmetic (B11)
+
+`_fill_actual_outcomes()` in `backtesting/backtester.py` previously computed the outcome price as `df["close"].iloc[pred_idx + horizon]` — a raw row offset. If yfinance drops any trading session (e.g., a Swedish public holiday), every subsequent P&L calculation is silently shifted by one day. Changed to `df_index[pred_idx] + BDay(horizon)` date arithmetic: the exact business-day-calendar target date is computed, then looked up by date in `date_to_idx`. If the exact date is absent (genuine holiday gap), the code scans forward up to 3 extra business days before giving up. Added `test_gap_in_data_does_not_shift_target_date` which drops a row from the middle of a synthetic DataFrame and confirms the correct target price is still retrieved.
+
+---
+
 ## 2026-03-18 (session 11)
 
 ### Directional calibration exposed in `calibrate` CLI command (R7)

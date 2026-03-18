@@ -5,6 +5,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import BDay
 
 from backtesting.metrics import MetricsCalculator
 from backtesting.results import (
@@ -583,7 +584,8 @@ class Backtester:
             horizons: List of prediction horizons
         """
         # Create date to index mapping
-        date_to_idx = {d.date(): i for i, d in enumerate(df.index)}
+        df_index = pd.DatetimeIndex(df.index)
+        date_to_idx = {d.date(): i for i, d in enumerate(df_index)}
 
         for daily_pred in daily_predictions:
             for horizon in horizons:
@@ -592,16 +594,28 @@ class Backtester:
 
                 pred = daily_pred.predictions[horizon]
 
-                # Find target date index
-                # Need to find the trading day that is 'horizon' days ahead
                 pred_idx = date_to_idx.get(pred.prediction_date)
                 if pred_idx is None:
                     continue
 
-                target_idx = pred_idx + horizon
+                # Use business-day date arithmetic to find the target date.
+                # Row-offset arithmetic (pred_idx + horizon) is wrong when
+                # yfinance drops sessions: a single gap shifts every target
+                # price by one day, silently misstating all P&L.
+                # Instead, compute the exact calendar business day that is
+                # `horizon` BDays ahead, then look it up by date.  Scan
+                # forward up to 3 extra business days to absorb Swedish
+                # public holidays that yfinance omits.
+                target_ts = df_index[pred_idx] + BDay(horizon)
+                target_idx: int | None = None
+                for extra in range(4):
+                    candidate = (target_ts + BDay(extra)).date()
+                    if candidate in date_to_idx:
+                        target_idx = date_to_idx[candidate]
+                        break
 
-                if target_idx >= len(df):
-                    # Future date not available yet
+                if target_idx is None:
+                    # Target date not yet in data (near end of available history)
                     continue
 
                 # Get actual price change
@@ -617,4 +631,4 @@ class Backtester:
                 # Update prediction
                 pred.actual_price_change = actual_change
                 pred.actual_signal = actual_signal
-                pred.target_date = df.index[target_idx].date()
+                pred.target_date = df_index[target_idx].date()

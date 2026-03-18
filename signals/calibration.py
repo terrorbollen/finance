@@ -6,6 +6,7 @@ calibrated probabilities that reflect actual historical accuracy.
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,7 @@ class ConfidenceCalibrator:
         self.num_buckets = num_buckets
         self.buckets: list[CalibrationBucket] = []
         self.is_fitted = False
+        self.fitted_at: datetime | None = None
 
         # Minimum samples required per bucket for reliable calibration
         self.min_samples_per_bucket = 10
@@ -106,6 +108,7 @@ class ConfidenceCalibrator:
 
         self.buckets = raw_buckets
         self.is_fitted = True
+        self.fitted_at = datetime.now(UTC)
 
         return self
 
@@ -184,12 +187,25 @@ class ConfidenceCalibrator:
 
         return "\n".join(lines)
 
+    def staleness_warning(self, max_days: int = 30) -> str | None:
+        """Return a warning string if the calibrator is older than max_days, else None."""
+        if self.fitted_at is None:
+            return "Calibration age unknown (fitted_at missing) — rerun `calibrate` to refresh."
+        age = datetime.now(UTC) - self.fitted_at
+        if age.days > max_days:
+            return (
+                f"Calibration is {age.days} days old (limit: {max_days}d) — "
+                "rerun `calibrate` to refresh."
+            )
+        return None
+
     def save(self, path: str):
         """Save calibration parameters to JSON file."""
         data = {
             "num_buckets": self.num_buckets,
             "min_samples_per_bucket": self.min_samples_per_bucket,
             "is_fitted": self.is_fitted,
+            "fitted_at": self.fitted_at.isoformat() if self.fitted_at else None,
             "buckets": [
                 {
                     "raw_min": b.raw_min,
@@ -214,6 +230,8 @@ class ConfidenceCalibrator:
         calibrator = cls(num_buckets=data["num_buckets"])
         calibrator.min_samples_per_bucket = data["min_samples_per_bucket"]
         calibrator.is_fitted = data["is_fitted"]
+        raw_ts = data.get("fitted_at")
+        calibrator.fitted_at = datetime.fromisoformat(raw_ts) if raw_ts else None
         calibrator.buckets = [
             CalibrationBucket(
                 raw_min=b["raw_min"],
@@ -308,6 +326,14 @@ class DirectionalCalibrator:
         if self.is_fitted_for(direction):
             return self.calibrators[direction].calibrate(raw_confidence)
         return raw_confidence
+
+    def staleness_warning(self, max_days: int = 30) -> str | None:
+        """Return a warning if any fitted direction calibrator is stale, else None."""
+        for cal in self.calibrators.values():
+            warning = cal.staleness_warning(max_days)
+            if warning:
+                return warning
+        return None
 
     def save(self, path: str):
         """Save all per-direction calibrators to a single JSON file."""

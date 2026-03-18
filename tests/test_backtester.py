@@ -215,6 +215,41 @@ class TestFillActualOutcomes:
         assert p.actual_price_change is None
         assert p.actual_signal is None
 
+    def test_gap_in_data_does_not_shift_target_date(self):
+        """When yfinance drops a session, the target price must still reflect the
+        correct business-day horizon, not a shifted row offset."""
+        bt, df = self._setup(n_rows=30)
+        idx = 10
+        pred_date = df.index[idx].date()
+        horizon = 5
+
+        # Drop row idx+2 to simulate a yfinance data gap
+        df_gap = pd.concat([df.iloc[:idx + 2], df.iloc[idx + 3:]]).copy()
+        df_gap.index = pd.DatetimeIndex(df_gap.index)
+
+        # Price at the correct 5-BDay target in the gapped frame
+        from pandas.tseries.offsets import BDay
+        target_date = (df.index[idx] + BDay(horizon)).date()
+        # After the drop the target date row still exists in df_gap (we dropped idx+2, not idx+5)
+        target_price_correct = float(df["close"].loc[df.index[idx] + BDay(horizon)])
+        pred_price = float(df["close"].iloc[idx])
+        expected_change = ((target_price_correct / pred_price) - 1) * 100
+
+        p = HorizonPrediction(
+            prediction_date=pred_date,
+            horizon_days=horizon,
+            predicted_signal=Signal.BUY,
+            confidence=0.7,
+            predicted_price_change=2.0,
+        )
+        daily = DailyPrediction(date=pred_date, current_price=pred_price)
+        daily.add_prediction(p)
+
+        bt._fill_actual_outcomes(df_gap, [daily], horizons=[horizon])
+
+        assert p.actual_price_change == pytest.approx(expected_change, rel=1e-6)
+        assert p.target_date == target_date
+
     def test_actual_signal_matches_threshold(self):
         bt, df = self._setup(n_rows=30)
         # Manually force a large price jump at idx+5
