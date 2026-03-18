@@ -1,5 +1,7 @@
 """Data fetching module for Swedish stocks and indexes via yfinance."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 import yfinance as yf
 
@@ -126,9 +128,7 @@ class StockDataFetcher:
         except (ValueError, IndexError):
             return None
 
-    def fetch_reference_series(
-        self, ticker: str, align_to: pd.DatetimeIndex
-    ) -> pd.DataFrame:
+    def fetch_reference_series(self, ticker: str, align_to: pd.DatetimeIndex) -> pd.DataFrame:
         """
         Fetch a reference price series (e.g. OMXS30, FX rates) and align it
         to the supplied DatetimeIndex.
@@ -164,14 +164,28 @@ class StockDataFetcher:
         return aligned
 
     def fetch_cross_asset_data(self, align_to: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
-        """Fetch OMXS30, USD/SEK, EUR/SEK, VIX, and VSTOXX reference data aligned to align_to."""
-        return {
-            "omxs30": self.fetch_reference_series("^OMX", align_to),
-            "usdsek": self.fetch_reference_series("USDSEK=X", align_to),
-            "eursek": self.fetch_reference_series("EURSEK=X", align_to),
-            "vix": self.fetch_reference_series("^VIX", align_to),
-            "vstoxx": self.fetch_reference_series("^V2TX", align_to),
+        """Fetch OMXS30, USD/SEK, EUR/SEK, VIX, VSTOXX, Brent crude, and 10Y rates aligned to align_to.
+
+        All series are fetched concurrently to minimise wall-clock time.
+        """
+        series_to_fetch = {
+            "omxs30": "^OMX",
+            "usdsek": "USDSEK=X",
+            "eursek": "EURSEK=X",
+            "vix": "^VIX",
+            "vstoxx": "^V2TX",
+            "oil": "BZ=F",
+            "rates": "^TNX",
         }
+        result: dict[str, pd.DataFrame] = {}
+        with ThreadPoolExecutor(max_workers=len(series_to_fetch)) as pool:
+            futures = {
+                pool.submit(self.fetch_reference_series, ticker, align_to): key
+                for key, ticker in series_to_fetch.items()
+            }
+            for future in as_completed(futures):
+                result[futures[future]] = future.result()
+        return result
 
     @staticmethod
     def list_swedish_tickers() -> dict[str, str]:

@@ -41,7 +41,9 @@ class SignalModel:
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
         self.class_weights = class_weights
-        self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        self.prediction_horizons = (
+            prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        )
         self.model: keras.Model | None = None
         self._build_model()
 
@@ -121,13 +123,15 @@ class SignalModel:
 
         outputs = self.model.predict(X, verbose=0)
         # outputs = [signal_5d, signal_10d, ..., price_target]
-        signal_probs_list = outputs[:-1]   # list of (batch, 3)
-        price_target = outputs[-1]          # (batch, 1)
+        signal_probs_list = outputs[:-1]  # list of (batch, 3)
+        price_target = outputs[-1]  # (batch, 1)
 
         batch_size = len(X)
 
         # Per-horizon argmax votes: (n_horizons, batch)
-        votes = np.stack([np.argmax(p, axis=1) for p in signal_probs_list], axis=1)  # (batch, n_horizons)
+        votes = np.stack(
+            [np.argmax(p, axis=1) for p in signal_probs_list], axis=1
+        )  # (batch, n_horizons)
 
         # Average probabilities for confidence reporting
         avg_probs = np.mean(np.stack(signal_probs_list, axis=0), axis=0)  # (batch, 3)

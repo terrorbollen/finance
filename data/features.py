@@ -7,9 +7,11 @@ import pandas as pd
 class FeatureEngineer:
     """Calculates technical indicators and features for ML models.
 
-    Produces 8 features chosen for low mutual redundancy:
-        rsi, macd_histogram, momentum_10, returns,
-        atr, bb_position, volume_ratio, adx_14
+    Core features: rsi, macd_histogram, momentum_10, returns,
+                   atr, bb_position, volume_ratio, adx_14
+    Volatility:    vix_level, vix_1d_change, vix_stock_corr,
+                   vstoxx_level, vstoxx_1d_change
+    Macro:         oil_level, oil_1d_change, rate_level, rate_1d_change
     """
 
     def __init__(self, df: pd.DataFrame, reference_data: dict[str, pd.DataFrame] | None = None):
@@ -35,6 +37,7 @@ class FeatureEngineer:
         self._add_volume_ratio()
         self._add_adx()
         self._add_volatility_features()
+        self._add_macro_features()
 
         self.df = self.df.dropna()
         return self.df
@@ -91,14 +94,20 @@ class FeatureEngineer:
         bb_upper = sma + std * std_dev
         bb_lower = sma - std * std_dev
         band_width = bb_upper - bb_lower
-        self.df["bb_position"] = (self.df["close"] - bb_lower).where(band_width > 0, 0.5) / band_width.where(band_width > 0, 1.0)
+        self.df["bb_position"] = (self.df["close"] - bb_lower).where(
+            band_width > 0, 0.5
+        ) / band_width.where(band_width > 0, 1.0)
 
     def _add_volume_ratio(self, period: int = 20) -> None:
         """Current volume relative to its rolling average, clipped at 10x.
 
         Falls back to 1.0 (neutral) when volume data is unavailable (e.g. indexes).
         """
-        if "volume" not in self.df.columns or self.df["volume"].isna().all() or (self.df["volume"] == 0).all():
+        if (
+            "volume" not in self.df.columns
+            or self.df["volume"].isna().all()
+            or (self.df["volume"] == 0).all()
+        ):
             self.df["volume_ratio"] = 1.0
             return
         vol_avg = self.df["volume"].rolling(window=period).mean()
@@ -165,7 +174,9 @@ class FeatureEngineer:
 
             # Normalised level: current / 252-day rolling mean (>1 = elevated fear)
             rolling_mean = vol_close.rolling(window=252, min_periods=20).mean()
-            self.df[f"{col_prefix}_level"] = (vol_close / rolling_mean.where(rolling_mean > 0, 1.0)).clip(0, 5)
+            self.df[f"{col_prefix}_level"] = (
+                vol_close / rolling_mean.where(rolling_mean > 0, 1.0)
+            ).clip(0, 5)
 
             # Daily % change in volatility index
             self.df[f"{col_prefix}_1d_change"] = vol_close.pct_change() * 100
@@ -173,7 +184,49 @@ class FeatureEngineer:
             # Rolling correlation between stock returns and vol-index changes (VIX only)
             if col_prefix == "vix":
                 vol_changes = vol_close.pct_change()
-                self.df["vix_stock_corr"] = stock_returns.rolling(window=corr_window, min_periods=10).corr(vol_changes)
+                self.df["vix_stock_corr"] = stock_returns.rolling(
+                    window=corr_window, min_periods=10
+                ).corr(vol_changes)
+
+    def _add_macro_features(self) -> None:
+        """Brent crude oil and 10Y interest rate macro features.
+
+        Uses Brent crude (BZ=F) and US 10Y Treasury yield (^TNX) from
+        reference_data if available. Falls back gracefully to neutral values
+        when data is missing so dropna() never removes rows.
+
+        Features added:
+            oil_level      — Brent close normalised by its 252-day rolling mean
+                             (>1 = oil expensive relative to recent history;
+                             relevant for energy costs and inflation regime).
+            oil_1d_change  — Daily % change in Brent price (captures supply shocks).
+            rate_level     — 10Y Treasury yield in % (e.g. 4.5 means 4.5%).
+                             Used directly; already scale-independent as a rate.
+            rate_1d_change — Daily change in 10Y yield in percentage points
+                             (positive = rates rising; tightening financial conditions).
+        """
+        # --- Oil (Brent crude, BZ=F) ---
+        oil_ref = self.reference_data.get("oil")
+        if oil_ref is None or oil_ref.empty or (oil_ref["close"] == 0).all():
+            self.df["oil_level"] = 1.0
+            self.df["oil_1d_change"] = 0.0
+        else:
+            oil_close = oil_ref["close"].reindex(self.df.index).ffill().bfill()
+            rolling_mean = oil_close.rolling(window=252, min_periods=20).mean()
+            self.df["oil_level"] = (oil_close / rolling_mean.where(rolling_mean > 0, 1.0)).clip(
+                0, 5
+            )
+            self.df["oil_1d_change"] = oil_close.pct_change() * 100
+
+        # --- Interest rates (US 10Y Treasury yield, ^TNX) ---
+        rate_ref = self.reference_data.get("rates")
+        if rate_ref is None or rate_ref.empty or (rate_ref["close"] == 0).all():
+            self.df["rate_level"] = 0.0
+            self.df["rate_1d_change"] = 0.0
+        else:
+            rate_close = rate_ref["close"].reindex(self.df.index).ffill().bfill()
+            self.df["rate_level"] = rate_close
+            self.df["rate_1d_change"] = rate_close.diff()
 
     # ------------------------------------------------------------------
     # Accessors

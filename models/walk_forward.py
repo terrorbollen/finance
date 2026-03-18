@@ -119,7 +119,9 @@ class WalkForwardTrainer:
         self.validation_days = validation_days
         self.step_days = step_days
         self.sequence_length = sequence_length
-        self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        self.prediction_horizons = (
+            prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        )
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         # Default purge_gap to longest horizon; embargo_gap to sequence_length
@@ -157,7 +159,7 @@ class WalkForwardTrainer:
             df_features[f"_future_return_{h}d"] = future_ret
             lbl = pd.Series(1, index=df_features.index, dtype=float)  # Hold
             lbl[future_ret.isna()] = float("nan")
-            lbl[future_ret > self.buy_threshold] = 0   # Buy
+            lbl[future_ret > self.buy_threshold] = 0  # Buy
             lbl[future_ret < self.sell_threshold] = 2  # Sell
             df_features[f"_label_{h}d"] = lbl
 
@@ -169,8 +171,7 @@ class WalkForwardTrainer:
 
         features = df_features[self.feature_columns].values
         labels_list: list[np.ndarray] = [
-            df_features[f"_label_{h}d"].to_numpy().astype(int)
-            for h in self.prediction_horizons
+            df_features[f"_label_{h}d"].to_numpy().astype(int) for h in self.prediction_horizons
         ]
         price_changes = df_features["_future_return"].to_numpy() * 100
 
@@ -278,9 +279,15 @@ class WalkForwardTrainer:
         )
 
         # Build named output dicts to match Keras model output names
-        y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train, strict=False)}
+        y_train_dict = {
+            f"signal_{h}d": ys
+            for h, ys in zip(self.prediction_horizons, y_signal_train, strict=False)
+        }
         y_train_dict["price_target"] = y_price_train
-        y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val, strict=False)}
+        y_val_dict = {
+            f"signal_{h}d": ys
+            for h, ys in zip(self.prediction_horizons, y_signal_val, strict=False)
+        }
         y_val_dict["price_target"] = y_price_val
 
         # Callbacks
@@ -363,8 +370,7 @@ class WalkForwardTrainer:
         features = np.vstack(all_features)
         # Concatenate each horizon's labels separately across tickers
         labels_list_combined: list[np.ndarray] = [
-            np.concatenate([t[i] for t in all_labels])
-            for i in range(len(self.prediction_horizons))
+            np.concatenate([t[i] for t in all_labels]) for i in range(len(self.prediction_horizons))
         ]
         prices = np.concatenate(all_prices)
 

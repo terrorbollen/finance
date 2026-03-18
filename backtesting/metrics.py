@@ -37,6 +37,7 @@ class TradingMetrics(TypedDict):
     net_return_ci: tuple[float, float]
     trades: list  # list[TradeRecord] — typed as list to avoid circular import
 
+
 # Maximum per-trade slippage cost as a percentage (0.5%)
 _MAX_SLIPPAGE_PCT = 0.5
 
@@ -310,13 +311,15 @@ class MetricsCalculator:
             net = gross - round_trip_cost - slippage_cost
             net_returns.append(net)
             equity_points.append((p.prediction_date, net))
-            trades_list.append(TradeRecord(
-                date=p.prediction_date,
-                signal=p.predicted_signal,
-                gross_pct=round(gross, 4),
-                net_pct=round(net, 4),
-                is_winner=(net > 0),
-            ))
+            trades_list.append(
+                TradeRecord(
+                    date=p.prediction_date,
+                    signal=p.predicted_signal,
+                    gross_pct=round(gross, 4),
+                    net_pct=round(net, 4),
+                    is_winner=(net > 0),
+                )
+            )
 
         empty: TradingMetrics = {
             "win_rate": 0.0,
@@ -398,9 +401,7 @@ class MetricsCalculator:
         rng = np.random.default_rng(42)
         arr = np.array(values)
         n = len(arr)
-        boot_stats = sorted(
-            stat_fn(arr[rng.integers(0, n, size=n)]) for _ in range(n_boot)
-        )
+        boot_stats = sorted(stat_fn(arr[rng.integers(0, n, size=n)]) for _ in range(n_boot))
         return (boot_stats[int(0.025 * n_boot)], boot_stats[int(0.975 * n_boot)])
 
     def _calculate_brier_score(self, predictions: list[HorizonPrediction]) -> float:
@@ -433,8 +434,11 @@ class MetricsCalculator:
     ) -> float:
         """Expected Calibration Error: weighted mean |accuracy - avg_confidence| per bucket."""
         bucket_ranges = {
-            "50-60%": (0.50, 0.60), "60-70%": (0.60, 0.70),
-            "70-80%": (0.70, 0.80), "80-90%": (0.80, 0.90), "90-100%": (0.90, 1.01),
+            "50-60%": (0.50, 0.60),
+            "60-70%": (0.60, 0.70),
+            "70-80%": (0.70, 0.80),
+            "80-90%": (0.80, 0.90),
+            "90-100%": (0.90, 1.01),
         }
         n = len(predictions)
         if n == 0:
@@ -484,9 +488,7 @@ class MetricsCalculator:
             if correct
         ]
 
-    def _calculate_regime_metrics(
-        self, predictions: list[HorizonPrediction]
-    ) -> dict[str, dict]:
+    def _calculate_regime_metrics(self, predictions: list[HorizonPrediction]) -> dict[str, dict]:
         """Split accuracy and win rate by ADX regime (ranging <20, trending 20-40, strong >40)."""
         regimes = {
             "ranging": lambda adx: adx < 20,
@@ -503,13 +505,18 @@ class MetricsCalculator:
                 continue
             accuracy = sum(1 for p in regime_preds if p.is_correct) / len(regime_preds)
             trades = [
-                p for p in regime_preds
+                p
+                for p in regime_preds
                 if p.predicted_signal != Signal.HOLD and p.actual_price_change is not None
             ]
             wins = sum(
-                1 for p in trades
-                if (p.predicted_signal == Signal.BUY and p.actual_price_change > 0)
-                or (p.predicted_signal == Signal.SELL and p.actual_price_change < 0)
+                1
+                for p in trades
+                if p.actual_price_change is not None
+                and (
+                    (p.predicted_signal == Signal.BUY and p.actual_price_change > 0)
+                    or (p.predicted_signal == Signal.SELL and p.actual_price_change < 0)
+                )
             )
             result[name] = {
                 "accuracy": round(accuracy, 4),

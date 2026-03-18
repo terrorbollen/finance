@@ -15,6 +15,7 @@ from backtesting.results import DailyPrediction, HorizonPrediction, Signal
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_df(n_rows: int = 60, with_volume: bool = True) -> pd.DataFrame:
     """Synthetic OHLCV DataFrame with a DatetimeIndex."""
     dates = pd.date_range(start="2023-01-02", periods=n_rows, freq="B")
@@ -70,6 +71,7 @@ def _backtester_with_mock_model(
     bt.model = _mock_model(signal_idx)
 
     from backtesting.metrics import MetricsCalculator
+
     bt.metrics_calculator = MetricsCalculator(
         buy_threshold=bt.buy_threshold,
         sell_threshold=bt.sell_threshold,
@@ -82,6 +84,7 @@ def _backtester_with_mock_model(
 # ---------------------------------------------------------------------------
 # Holdout enforcement — calls real bt.run() so changes to the guard are caught
 # ---------------------------------------------------------------------------
+
 
 def _patch_fetcher(monkeypatch, df: pd.DataFrame) -> None:
     """Patch StockDataFetcher and FeatureEngineer so run() uses synthetic data."""
@@ -150,6 +153,7 @@ class TestHoldoutEnforcement:
 # ---------------------------------------------------------------------------
 # _fill_actual_outcomes
 # ---------------------------------------------------------------------------
+
 
 class TestFillActualOutcomes:
     def _setup(self, n_rows: int = 30, seq_len: int = 5):
@@ -224,11 +228,12 @@ class TestFillActualOutcomes:
         horizon = 5
 
         # Drop row idx+2 to simulate a yfinance data gap
-        df_gap = pd.concat([df.iloc[:idx + 2], df.iloc[idx + 3:]]).copy()
+        df_gap = pd.concat([df.iloc[: idx + 2], df.iloc[idx + 3 :]]).copy()
         df_gap.index = pd.DatetimeIndex(df_gap.index)
 
         # Price at the correct 5-BDay target in the gapped frame
         from pandas.tseries.offsets import BDay
+
         target_date = (df.index[idx] + BDay(horizon)).date()
         # After the drop the target date row still exists in df_gap (we dropped idx+2, not idx+5)
         target_price_correct = float(df["close"].loc[df.index[idx] + BDay(horizon)])
@@ -276,6 +281,7 @@ class TestFillActualOutcomes:
 # ---------------------------------------------------------------------------
 # _predict_for_date — relative volume
 # ---------------------------------------------------------------------------
+
 
 class TestPredictForDate:
     def test_relative_volume_computed_when_volume_present(self):

@@ -51,7 +51,9 @@ class ModelTrainer:
             use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
         """
         self.sequence_length = sequence_length
-        self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        self.prediction_horizons = (
+            prediction_horizons if prediction_horizons is not None else [5, 10, 20]
+        )
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.buy_threshold = buy_threshold
@@ -106,9 +108,7 @@ class ModelTrainer:
 
         # Future end-return at the middle horizon for the price-target regression head
         mid_h = self.prediction_horizons[len(self.prediction_horizons) // 2]
-        df_features["future_return"] = (
-            df_features["close"].shift(-mid_h) / df_features["close"] - 1
-        )
+        df_features["future_return"] = df_features["close"].shift(-mid_h) / df_features["close"] - 1
 
         from numpy.lib.stride_tricks import sliding_window_view  # noqa: PLC0415
 
@@ -128,7 +128,9 @@ class ModelTrainer:
                 min_ret[: n - h] = windows.min(axis=1) / close_vals[: n - h] - 1
 
             # Store labels as columns so dropna() aligns them automatically
-            lbl = np.full(n, float(HOLD_IDX), dtype=float)  # default HOLD (float to allow NaN passthrough)
+            lbl = np.full(
+                n, float(HOLD_IDX), dtype=float
+            )  # default HOLD (float to allow NaN passthrough)
             lbl[np.isnan(max_ret)] = np.nan
 
             buy_cond = max_ret > buy_thresh
@@ -140,8 +142,8 @@ class ModelTrainer:
 
             # Conflict: both thresholds crossed — label by larger magnitude
             conflict = buy_cond & sell_cond & ~np.isnan(max_ret)
-            lbl[conflict & (max_ret >= np.abs(min_ret))] = BUY_IDX   # upside wins
-            lbl[conflict & (max_ret < np.abs(min_ret))] = SELL_IDX   # downside wins
+            lbl[conflict & (max_ret >= np.abs(min_ret))] = BUY_IDX  # upside wins
+            lbl[conflict & (max_ret < np.abs(min_ret))] = SELL_IDX  # downside wins
             df_features[f"_label_{h}d"] = lbl
 
         # Drop rows with NaN (TA warmup + last max_horizon rows without future prices)
@@ -203,7 +205,9 @@ class ModelTrainer:
             try:
                 df = fetcher.fetch(ticker)
                 ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
-                features, labels_list, prices, dates = self.prepare_data(df, reference_data=ref_data)
+                features, labels_list, prices, dates = self.prepare_data(
+                    df, reference_data=ref_data
+                )
                 if self.holdout_date is not None:
                     # Keep only data strictly before holdout_date so the model never
                     # trains on any part of the evaluation window.
@@ -233,8 +237,7 @@ class ModelTrainer:
         features = np.vstack(all_features)
         # labels_list_combined[i] = concatenated labels for horizon i across all tickers
         labels_list_combined: list[np.ndarray] = [
-            np.concatenate([t[i] for t in all_labels])
-            for i in range(len(self.prediction_horizons))
+            np.concatenate([t[i] for t in all_labels]) for i in range(len(self.prediction_horizons))
         ]
         prices = np.concatenate(all_prices)
         print(f"Total samples: {len(features):,}  |  Features: {features.shape[1]}")
@@ -361,11 +364,20 @@ class ModelTrainer:
             ]
 
             # Build named output dicts for multi-horizon training
-            y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train, strict=True)}
+            y_train_dict = {
+                f"signal_{h}d": ys
+                for h, ys in zip(self.prediction_horizons, y_signal_train, strict=True)
+            }
             y_train_dict["price_target"] = y_price_train
-            y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val, strict=True)}
+            y_val_dict = {
+                f"signal_{h}d": ys
+                for h, ys in zip(self.prediction_horizons, y_signal_val, strict=True)
+            }
             y_val_dict["price_target"] = y_price_val
-            y_test_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_test, strict=True)}
+            y_test_dict = {
+                f"signal_{h}d": ys
+                for h, ys in zip(self.prediction_horizons, y_signal_test, strict=True)
+            }
             y_test_dict["price_target"] = y_price_test
 
             fit_kwargs: dict = {
@@ -509,8 +521,10 @@ class ModelTrainer:
                             tags={"holdout_start_date": holdout_date_str},
                         )
                     except Exception as e:
-                        print(f"Warning: MLflow model registry unavailable ({e}). "
-                              "Run ID {run_id} still logged.")
+                        print(
+                            f"Warning: MLflow model registry unavailable ({e}). "
+                            "Run ID {run_id} still logged."
+                        )
         else:
             history, test_results, _ = _do_training()
 
@@ -523,3 +537,135 @@ class ModelTrainer:
             "loaded_tickers": loaded_tickers,
             "mlflow_run_id": run_id,
         }
+
+
+class HyperparameterTuner:
+    """Random hyperparameter search over ModelTrainer settings.
+
+    Each trial trains a fresh ModelTrainer with a randomly sampled combination
+    of hyperparameters for a fixed number of epochs (early stopping applies).
+    All trials are tracked in MLflow: one parent ``hyperparameter-search`` run
+    with one nested child run per trial.
+
+    Usage::
+
+        tuner = HyperparameterTuner()
+        results = tuner.search(["VOLV-B.ST", "ERIC-B.ST"], n_trials=10)
+        print("Best params:", results[0]["params"])
+    """
+
+    #: Default search space.  Override by passing ``param_grid`` to ``search()``.
+    DEFAULT_PARAM_GRID: dict[str, list] = {
+        "sequence_length": [10, 20, 30],
+        "buy_threshold": [0.01, 0.02, 0.03],
+        "batch_size": [32, 64],
+        "use_focal_loss": [True, False],
+    }
+
+    def search(
+        self,
+        tickers: list[str],
+        n_trials: int = 10,
+        tune_epochs: int = 20,
+        param_grid: dict[str, list] | None = None,
+        random_seed: int = 42,
+    ) -> list[dict]:
+        """Run random hyperparameter search.
+
+        Args:
+            tickers: Ticker symbols to train on for each trial.
+            n_trials: Number of random combinations to evaluate.
+            tune_epochs: Maximum epochs per trial.  Early stopping (patience=5)
+                         will cut trials short when validation loss plateaus.
+            param_grid: Search space.  Each key maps to a list of candidate
+                        values.  Defaults to ``DEFAULT_PARAM_GRID``.
+            random_seed: Seed for reproducible sampling.
+
+        Returns:
+            List of result dicts sorted by ``best_val_accuracy`` descending.
+            Each dict contains:
+            - ``"params"``: the sampled hyperparameter combination
+            - ``"best_val_accuracy"``: best validation accuracy seen during training
+            - ``"mlflow_run_id"``: MLflow child run ID for this trial
+        """
+        import random  # noqa: PLC0415
+
+        rng = random.Random(random_seed)
+        grid = param_grid or self.DEFAULT_PARAM_GRID
+        setup_mlflow()
+
+        results: list[dict] = []
+        parent_name = f"hparam-search-{'-'.join(tickers[:2])}"
+        if len(tickers) > 2:
+            parent_name += f"-+{len(tickers) - 2}"
+
+        with training_run(
+            run_name=parent_name,
+            tags={
+                "run_type": "hyperparameter-search",
+                "tickers": ",".join(tickers),
+                "n_trials": str(n_trials),
+            },
+        ):
+            mlflow.log_params(
+                {"n_trials": n_trials, "tune_epochs": tune_epochs, "random_seed": random_seed}
+            )
+
+            for trial_idx in range(n_trials):
+                params: dict = {k: rng.choice(v) for k, v in grid.items()}
+                print(f"\n{'=' * 60}")
+                print(f"Trial {trial_idx + 1}/{n_trials}: {params}")
+                print(f"{'=' * 60}")
+
+                buy_thresh = float(params.get("buy_threshold", 0.02))
+                trainer = ModelTrainer(
+                    sequence_length=int(params.get("sequence_length", 20)),
+                    buy_threshold=buy_thresh,
+                    sell_threshold=-buy_thresh,
+                )
+
+                trial_run_id: str | None = None
+                best_val_acc: float = float("nan")
+                try:
+                    with mlflow.start_run(nested=True, run_name=f"trial-{trial_idx + 1}"):
+                        mlflow.log_params(params)
+                        result = trainer.train(
+                            tickers=tickers,
+                            epochs=tune_epochs,
+                            batch_size=int(params.get("batch_size", 32)),
+                            use_focal_loss=bool(params.get("use_focal_loss", True)),
+                            track_with_mlflow=False,
+                        )
+                        history = result["history"]
+                        val_acc_keys = [k for k in history if "val_signal" in k and "accuracy" in k]
+                        if val_acc_keys:
+                            best_val_acc = max(max(history[k]) for k in val_acc_keys)
+                        mlflow.log_metric("best_val_accuracy", best_val_acc)
+                        active = mlflow.active_run()
+                        if active:
+                            trial_run_id = active.info.run_id
+
+                    print(f"  → best_val_accuracy={best_val_acc:.4f}")
+                    results.append(
+                        {
+                            "params": params,
+                            "best_val_accuracy": best_val_acc,
+                            "mlflow_run_id": trial_run_id,
+                        }
+                    )
+                except Exception as e:
+                    print(f"  Trial {trial_idx + 1} failed: {e}")
+
+            results.sort(key=lambda r: r["best_val_accuracy"], reverse=True)
+
+            if results:
+                mlflow.log_metric("best_val_accuracy", results[0]["best_val_accuracy"])
+                mlflow.log_params({f"best_{k}": v for k, v in results[0]["params"].items()})
+
+        print(f"\n{'=' * 60}")
+        print("HYPERPARAMETER SEARCH COMPLETE (best → worst)")
+        print(f"{'=' * 60}")
+        for i, r in enumerate(results, 1):
+            print(f"{i:2d}. val_acc={r['best_val_accuracy']:.4f}  {r['params']}")
+
+        return results

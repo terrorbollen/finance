@@ -1,6 +1,5 @@
 """Tests for WalkForwardTrainer purge/embargo gap logic."""
 
-
 from models.walk_forward import WalkForwardTrainer
 
 # ---------------------------------------------------------------------------
@@ -40,8 +39,7 @@ class TestZeroGapBackwardCompatibility:
         assert windows, "Expected at least one window"
         for _train_start, train_end, val_start, _val_end in windows:
             assert val_start == train_end, (
-                f"With zero purge_gap, val_start ({val_start}) should equal "
-                f"train_end ({train_end})"
+                f"With zero purge_gap, val_start ({val_start}) should equal train_end ({train_end})"
             )
 
     def test_windows_are_contiguous_when_no_gap(self) -> None:
@@ -103,8 +101,7 @@ class TestPurgeGap:
         for _train_start, train_end, val_start, val_end in windows:
             # The gap is between train_end and val_start
             assert val_start - train_end == purge, (
-                f"Gap between train_end ({train_end}) and val_start "
-                f"({val_start}) should be {purge}"
+                f"Gap between train_end ({train_end}) and val_start ({val_start}) should be {purge}"
             )
             # The validation window itself still has validation_days rows
             assert val_end - val_start == validation_days

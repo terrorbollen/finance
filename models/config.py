@@ -46,17 +46,11 @@ class ModelConfig(BaseModel):
     def dimensions_must_be_consistent(self) -> ModelConfig:
         n = self.input_dim
         if len(self.feature_columns) != n:
-            raise ValueError(
-                f"input_dim={n} but len(feature_columns)={len(self.feature_columns)}"
-            )
+            raise ValueError(f"input_dim={n} but len(feature_columns)={len(self.feature_columns)}")
         if len(self.feature_mean) != n:
-            raise ValueError(
-                f"input_dim={n} but len(feature_mean)={len(self.feature_mean)}"
-            )
+            raise ValueError(f"input_dim={n} but len(feature_mean)={len(self.feature_mean)}")
         if len(self.feature_std) != n:
-            raise ValueError(
-                f"input_dim={n} but len(feature_std)={len(self.feature_std)}"
-            )
+            raise ValueError(f"input_dim={n} but len(feature_std)={len(self.feature_std)}")
         return self
 
     # ------------------------------------------------------------------

@@ -237,6 +237,12 @@ class Backtester:
 
         print(f"Running backtest on {ticker} from {start_date} to {end_date}", flush=True)
         print(f"Processing {len(backtest_indices)} trading days...", flush=True)
+        print(
+            "Note: confidence scores in this backtest are raw model output (pre-calibration). "
+            "Live signals via `generate` apply isotonic calibration, so their confidence "
+            "values will differ. The calibration table in the summary reflects raw scores.",
+            flush=True,
+        )
 
         if horizons is None:
             horizons = [1, 2, 3, 4, 5, 6, 7]
@@ -250,10 +256,10 @@ class Backtester:
 
         def _normalize(arr: np.ndarray) -> np.ndarray:
             if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
-                return (arr - self.feature_mean) / self.feature_std  # type: ignore[operator]
+                return (arr - self.feature_mean) / self.feature_std  # type: ignore[operator, no-any-return]
             mean = arr.mean(axis=0)
             std = arr.std(axis=0) + 1e-8
-            return (arr - mean) / std
+            return (arr - mean) / std  # type: ignore[no-any-return]
 
         if self.model is None:
             raise RuntimeError("Model not initialized — call _load_model() first")
@@ -261,10 +267,12 @@ class Backtester:
         if self.retrain_every is None:
             # Fast path: single batch over the full period.
             feature_array_norm = _normalize(feature_array)
-            X_all = np.stack([
-                feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
-                for idx in backtest_indices
-            ])
+            X_all = np.stack(
+                [
+                    feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
+                    for idx in backtest_indices
+                ]
+            )
             signal_probs_all, signal_classes_all, price_targets_all = self.model.predict(X_all)
         else:
             # Chunked path: retrain at the boundary of every chunk.
@@ -278,18 +286,16 @@ class Backtester:
                 if chunk_idx > 0:
                     cutoff = df_index[chunk[0]].date()
                     print(
-                        f"\nRetraining model at {cutoff} "
-                        f"(chunk {chunk_idx + 1}/{len(chunks)})...",
+                        f"\nRetraining model at {cutoff} (chunk {chunk_idx + 1}/{len(chunks)})...",
                         flush=True,
                     )
                     self._retrain_model(df_raw, ref_data, cutoff)
 
                 # Recompute normalised features with current stats after any retrain.
                 feature_array_norm = _normalize(feature_array)
-                X_chunk = np.stack([
-                    feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
-                    for idx in chunk
-                ])
+                X_chunk = np.stack(
+                    [feature_array_norm[idx - self.sequence_length + 1 : idx + 1] for idx in chunk]
+                )
                 if self.model is None:
                     raise RuntimeError("Model lost after retrain")
                 probs, classes, prices = self.model.predict(X_chunk)
@@ -333,16 +339,18 @@ class Backtester:
 
             daily_pred = DailyPrediction(date=pred_date, current_price=current_price)
             for horizon in horizons:
-                daily_pred.add_prediction(HorizonPrediction(
-                    prediction_date=pred_date,
-                    horizon_days=horizon,
-                    predicted_signal=predicted_signal,
-                    confidence=confidence,
-                    predicted_price_change=predicted_change,
-                    relative_volume=relative_volume,
-                    adx=adx,
-                    all_probs=all_probs,
-                ))
+                daily_pred.add_prediction(
+                    HorizonPrediction(
+                        prediction_date=pred_date,
+                        horizon_days=horizon,
+                        predicted_signal=predicted_signal,
+                        confidence=confidence,
+                        predicted_price_change=predicted_change,
+                        relative_volume=relative_volume,
+                        adx=adx,
+                        all_probs=all_probs,
+                    )
+                )
             daily_predictions.append(daily_pred)
 
         # Fill in actual outcomes
@@ -415,7 +423,9 @@ class Backtester:
 
         min_rows = self.sequence_length + max(self.prediction_horizons or [20]) + 50
         if len(df_cut) < min_rows:
-            print(f"  Skipping retrain: only {len(df_cut)} rows before {cutoff_date} (need {min_rows})")
+            print(
+                f"  Skipping retrain: only {len(df_cut)} rows before {cutoff_date} (need {min_rows})"
+            )
             return
 
         horizons = self.prediction_horizons or [5, 10, 20]
@@ -470,6 +480,11 @@ class Backtester:
         self.feature_mean = feature_mean
         self.feature_std = feature_std
         self.input_dim = input_dim
+        # NOTE (B13): backtesting/ must not import signals/ (INVARIANTS.md), so the
+        # backtester never loads a ConfidenceCalibrator.  Confidence scores are always
+        # raw softmax outputs.  After a retrain the newly trained model's probability
+        # distribution changes anyway, so any pre-retrain calibration would be
+        # misleading — raw scores are the honest choice here.
         print(f"  Retrain complete — {len(X)} sequences, input_dim={input_dim}", flush=True)
 
     def _compute_benchmark_return(

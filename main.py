@@ -131,9 +131,18 @@ def cmd_train(args):
         else:
             # Standard training
             from datetime import datetime as _dt
+
             paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
-            holdout_date = _dt.strptime(args.holdout_start, "%Y-%m-%d").date() if getattr(args, "holdout_start", None) else None
-            horizons = [int(h) for h in args.horizons.split(",")] if getattr(args, "horizons", None) else None
+            holdout_date = (
+                _dt.strptime(args.holdout_start, "%Y-%m-%d").date()
+                if getattr(args, "holdout_start", None)
+                else None
+            )
+            horizons = (
+                [int(h) for h in args.horizons.split(",")]
+                if getattr(args, "horizons", None)
+                else None
+            )
             trainer = ModelTrainer(holdout_date=holdout_date, prediction_horizons=horizons)
             results = trainer.train(
                 tickers=tickers,
@@ -202,7 +211,9 @@ def _run_leverage_comparison(args, start_date, end_date, horizons):
     print(f"{'=' * 80}")
     for horizon in sorted(horizons):
         print(f"\n  Horizon {horizon}d")
-        print(f"  {'Leverage':<12} {'Net Ret%':<12} {'Sharpe':<10} {'Max DD%':<12} {'Win Rate':<12} {'Trades'}")
+        print(
+            f"  {'Leverage':<12} {'Net Ret%':<12} {'Sharpe':<10} {'Max DD%':<12} {'Win Rate':<12} {'Trades'}"
+        )
         print(f"  {'-' * 68}")
         for lev, result in results:
             m = result.horizon_metrics.get(horizon)
@@ -322,6 +333,15 @@ def cmd_backtest(args):
                 )
                 result.export_json(output_path)
                 print(f"\nResults exported to {output_path}")
+
+        # Equity curve export
+        if getattr(args, "export_equity", None):
+            for h in sorted(result.horizon_metrics.keys()):
+                out = f"{args.export_equity}_h{h}d.csv"
+                result.export_equity_curve_csv(out, h)
+                m = result.horizon_metrics[h]
+                if m.equity_curve:
+                    print(f"Equity curve (h{h}d) exported to {out}")
 
         # Plot if requested
         if getattr(args, "plot", None) is not None:
@@ -650,9 +670,20 @@ Examples:
         dest="no_calibrate",
         help="Skip automatic confidence calibration after training.",
     )
-    train_parser.add_argument("--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')")
-    train_parser.add_argument("--holdout-start", default=None, dest="holdout_start", help="Fixed holdout boundary YYYY-MM-DD — only data before this date is used for training (e.g. 2025-01-01)")
-    train_parser.add_argument("--horizons", default=None, help="Comma-separated prediction horizons in days (default: 5,10,20). Use '5' for single-horizon mode which fixes SELL suppression from multi-head consensus.")
+    train_parser.add_argument(
+        "--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')"
+    )
+    train_parser.add_argument(
+        "--holdout-start",
+        default=None,
+        dest="holdout_start",
+        help="Fixed holdout boundary YYYY-MM-DD — only data before this date is used for training (e.g. 2025-01-01)",
+    )
+    train_parser.add_argument(
+        "--horizons",
+        default=None,
+        help="Comma-separated prediction horizons in days (default: 5,10,20). Use '5' for single-horizon mode which fixes SELL suppression from multi-head consensus.",
+    )
     train_parser.set_defaults(func=cmd_train)
 
     # list command
@@ -698,7 +729,7 @@ Examples:
         action="store_true",
         dest="no_strict_holdout",
         help="Allow backtest to overlap with training data (not recommended — disables the "
-             "look-ahead bias guard)",
+        "look-ahead bias guard)",
     )
     backtest_parser.add_argument(
         "--leverage",
@@ -717,7 +748,7 @@ Examples:
         action="store_true",
         dest="position_cooldown",
         help="Enforce non-overlapping positions: after a trade, skip the next N days "
-             "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
+        "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
     )
     backtest_parser.add_argument(
         "--retrain-every",
@@ -726,8 +757,8 @@ Examples:
         dest="retrain_every",
         metavar="N",
         help="Retrain the model every N trading days during the backtest using all data "
-             "available up to that point. Simulates periodic retraining in production. "
-             "Omit to use a single static model for the full period.",
+        "available up to that point. Simulates periodic retraining in production. "
+        "Omit to use a single static model for the full period.",
     )
     backtest_parser.add_argument(
         "--retrain-epochs",
@@ -736,14 +767,27 @@ Examples:
         dest="retrain_epochs",
         help="Epochs per retrain when --retrain-every is set (default: 20).",
     )
-    backtest_parser.add_argument("--name", default=None, help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')")
+    backtest_parser.add_argument(
+        "--name",
+        default=None,
+        help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')",
+    )
     backtest_parser.add_argument(
         "--plot",
         nargs="?",
         const="",
         metavar="FILE",
         help="Plot signals and equity curve after backtest. Optionally supply a file path "
-             "(PNG/PDF) to save the figure; omit to show interactively.",
+        "(PNG/PDF) to save the figure; omit to show interactively.",
+    )
+    backtest_parser.add_argument(
+        "--export-equity",
+        default=None,
+        dest="export_equity",
+        metavar="BASE_PATH",
+        help="Export per-horizon equity curves to CSV files at BASE_PATH_h{N}d.csv "
+        "(e.g. --export-equity results/equity exports results/equity_h1d.csv, "
+        "results/equity_h5d.csv, …).  Skips horizons with no trades.",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
 
@@ -753,19 +797,66 @@ Examples:
     )
     portfolio_parser.add_argument("tickers", nargs="+", help="Ticker symbols")
     portfolio_parser.add_argument("--name", default=None, help="Model name (e.g. 'indexes')")
-    portfolio_parser.add_argument("--horizon", type=int, default=5, help="Holding period in trading days (default: 5)")
-    portfolio_parser.add_argument("--capital", type=float, default=10_000.0, help="Initial capital (default: 10000)")
-    portfolio_parser.add_argument("--max-positions", type=int, default=None, dest="max_positions", help="Max concurrent positions (default: number of tickers)")
-    portfolio_parser.add_argument("--commission", type=float, default=0.001, help="One-way commission as decimal (default: 0.001)")
+    portfolio_parser.add_argument(
+        "--horizon", type=int, default=5, help="Holding period in trading days (default: 5)"
+    )
+    portfolio_parser.add_argument(
+        "--capital", type=float, default=10_000.0, help="Initial capital (default: 10000)"
+    )
+    portfolio_parser.add_argument(
+        "--max-positions",
+        type=int,
+        default=None,
+        dest="max_positions",
+        help="Max concurrent positions (default: number of tickers)",
+    )
+    portfolio_parser.add_argument(
+        "--commission",
+        type=float,
+        default=0.001,
+        help="One-way commission as decimal (default: 0.001)",
+    )
     portfolio_parser.add_argument("--start-date", dest="start_date", help="Start date YYYY-MM-DD")
     portfolio_parser.add_argument("--end-date", dest="end_date", help="End date YYYY-MM-DD")
-    portfolio_parser.add_argument("--no-strict-holdout", action="store_true", dest="no_strict_holdout", help="Allow overlap with training data")
-    portfolio_parser.add_argument("--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)")
-    portfolio_parser.add_argument("--kelly", action="store_true", help="Use Kelly criterion to size each trade by model confidence")
-    portfolio_parser.add_argument("--kelly-max", type=float, default=3.0, dest="kelly_max", help="Max leverage Kelly can assign per trade (default: 3.0)")
-    portfolio_parser.add_argument("--adx-filter", type=float, default=0.0, dest="adx_filter", help="Minimum ADX(14) to allow a trade — skips signals in low-trend/ranging markets (default: 0 = disabled)")
-    portfolio_parser.add_argument("--short", action="store_true", help="Also open short positions on SELL signals (default: BUY only)")
-    portfolio_parser.add_argument("--reversal-exit", action="store_true", dest="reversal_exit", help="Close a position early when the model signals the opposite direction")
+    portfolio_parser.add_argument(
+        "--no-strict-holdout",
+        action="store_true",
+        dest="no_strict_holdout",
+        help="Allow overlap with training data",
+    )
+    portfolio_parser.add_argument(
+        "--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)"
+    )
+    portfolio_parser.add_argument(
+        "--kelly",
+        action="store_true",
+        help="Use Kelly criterion to size each trade by model confidence",
+    )
+    portfolio_parser.add_argument(
+        "--kelly-max",
+        type=float,
+        default=3.0,
+        dest="kelly_max",
+        help="Max leverage Kelly can assign per trade (default: 3.0)",
+    )
+    portfolio_parser.add_argument(
+        "--adx-filter",
+        type=float,
+        default=0.0,
+        dest="adx_filter",
+        help="Minimum ADX(14) to allow a trade — skips signals in low-trend/ranging markets (default: 0 = disabled)",
+    )
+    portfolio_parser.add_argument(
+        "--short",
+        action="store_true",
+        help="Also open short positions on SELL signals (default: BUY only)",
+    )
+    portfolio_parser.add_argument(
+        "--reversal-exit",
+        action="store_true",
+        dest="reversal_exit",
+        help="Close a position early when the model signals the opposite direction",
+    )
     portfolio_parser.set_defaults(func=cmd_portfolio)
 
     # history command
@@ -814,7 +905,9 @@ Examples:
     calibrate_parser.add_argument(
         "--output", help="Output path for calibration file (default: checkpoints/calibration.json)"
     )
-    calibrate_parser.add_argument("--name", default=None, help="Model name — loads/saves to checkpoints/<name>/")
+    calibrate_parser.add_argument(
+        "--name", default=None, help="Model name — loads/saves to checkpoints/<name>/"
+    )
     calibrate_parser.set_defaults(func=cmd_calibrate)
 
     # Parse and execute

@@ -26,13 +26,13 @@ from models.config import ModelConfig
 class PortfolioTrade:
     ticker: str
     open_date: date
-    close_date: date          # The prediction_date that closes this trade
-    entry_value: float        # Capital committed at open
-    is_short: bool = False               # True for short (SELL signal) trades
-    effective_leverage: float = 1.0      # Kelly or fixed leverage applied
-    actual_return: float | None = None   # Decimal price change (e.g. 0.05 = +5%)
+    close_date: date  # The prediction_date that closes this trade
+    entry_value: float  # Capital committed at open
+    is_short: bool = False  # True for short (SELL signal) trades
+    effective_leverage: float = 1.0  # Kelly or fixed leverage applied
+    actual_return: float | None = None  # Decimal price change (e.g. 0.05 = +5%)
     commission_paid: float = 0.0
-    early_exit: bool = False             # True if closed before horizon elapsed
+    early_exit: bool = False  # True if closed before horizon elapsed
 
     @property
     def is_complete(self) -> bool:
@@ -44,7 +44,10 @@ class PortfolioTrade:
         if self.actual_return is None:
             return None
         direction = -1.0 if self.is_short else 1.0
-        return self.entry_value * self.actual_return * direction * self.effective_leverage - self.commission_paid
+        return (
+            self.entry_value * self.actual_return * direction * self.effective_leverage
+            - self.commission_paid
+        )
 
     @property
     def is_winner(self) -> bool | None:
@@ -87,7 +90,11 @@ class PortfolioResult:
 
     @property
     def sharpe_ratio(self) -> float:
-        rets = [t.pnl / t.entry_value for t in self.completed_trades if t.entry_value > 0 and t.pnl is not None]
+        rets = [
+            t.pnl / t.entry_value
+            for t in self.completed_trades
+            if t.entry_value > 0 and t.pnl is not None
+        ]
         if len(rets) < 2:
             return 0.0
         arr = np.array(rets)
@@ -127,7 +134,11 @@ class PortfolioResult:
         return stats
 
     def summary(self) -> str:
-        lev_str = f"  |  Kelly (max {self.leverage:.0f}x)" if self.use_kelly else (f"  |  {self.leverage:.0f}x leverage" if self.leverage != 1.0 else "")
+        lev_str = (
+            f"  |  Kelly (max {self.leverage:.0f}x)"
+            if self.use_kelly
+            else (f"  |  {self.leverage:.0f}x leverage" if self.leverage != 1.0 else "")
+        )
         lines = [
             "=" * 72,
             "  PORTFOLIO BACKTEST RESULTS",
@@ -147,8 +158,10 @@ class PortfolioResult:
         shorts = [t for t in self.completed_trades if t.is_short]
         early = [t for t in self.completed_trades if t.early_exit]
         if shorts or early:
-            lines.append(f"  Long / Short  : {len(longs)} / {len(shorts)}"
-                         + (f"  |  Early exits: {len(early)}" if early else ""))
+            lines.append(
+                f"  Long / Short  : {len(longs)} / {len(shorts)}"
+                + (f"  |  Early exits: {len(early)}" if early else "")
+            )
         lines += [
             "",
             f"  {'Ticker':<14} {'Trades':>7} {'Win Rate':>9} {'Net P&L':>10}",
@@ -196,10 +209,10 @@ class PortfolioBacktester:
         self.strict_holdout = strict_holdout
         self.leverage = leverage
         self.use_kelly = use_kelly
-        self.kelly_max = kelly_max          # cap: e.g. 3.0 = max 3x per trade
+        self.kelly_max = kelly_max  # cap: e.g. 3.0 = max 3x per trade
         self.stop_loss_pct = stop_loss_pct  # fallback stop for Kelly calc
-        self.adx_filter = adx_filter        # min ADX to allow a trade (0 = disabled)
-        self.allow_short = allow_short      # act on SELL signals with short positions
+        self.adx_filter = adx_filter  # min ADX to allow a trade (0 = disabled)
+        self.allow_short = allow_short  # act on SELL signals with short positions
         self.reversal_exit = reversal_exit  # exit early when model flips direction
         self._cal_buckets: list[dict] = self._load_calibration_buckets(model_name)
 
@@ -263,9 +276,8 @@ class PortfolioBacktester:
                     pred = pred_by_ticker[tkr].get(current_date)
                     if pred is None:
                         continue
-                    flip = (
-                        (not trade.is_short and pred.predicted_signal == Signal.SELL) or
-                        (trade.is_short and pred.predicted_signal == Signal.BUY)
+                    flip = (not trade.is_short and pred.predicted_signal == Signal.SELL) or (
+                        trade.is_short and pred.predicted_signal == Signal.BUY
                     )
                     if flip:
                         reversal_close.append(tkr)
@@ -283,7 +295,9 @@ class PortfolioBacktester:
                     direction = -1.0 if trade.is_short else 1.0
                     commission = entry_val * self.commission_pct * 2 * eff_lev
                     trade.commission_paid = commission
-                    capital += entry_val + entry_val * price_return * direction * eff_lev - commission
+                    capital += (
+                        entry_val + entry_val * price_return * direction * eff_lev - commission
+                    )
                     completed.append(trade)
                     equity_curve.append((current_date, self._portfolio_value(capital, open_pos)))
 
@@ -292,16 +306,20 @@ class PortfolioBacktester:
             for tkr in to_close:
                 _, _, entry_val, trade = open_pos.pop(tkr)
                 pred = pred_by_ticker[tkr].get(trade.open_date)
-                price_return = (pred.actual_price_change / 100.0) if (
-                    pred is not None and pred.actual_price_change is not None
-                ) else None
+                price_return = (
+                    (pred.actual_price_change / 100.0)
+                    if (pred is not None and pred.actual_price_change is not None)
+                    else None
+                )
                 trade.actual_return = price_return
                 eff_lev = trade.effective_leverage
                 direction = -1.0 if trade.is_short else 1.0
                 commission = entry_val * self.commission_pct * 2 * eff_lev
                 trade.commission_paid = commission
                 if price_return is not None:
-                    capital += entry_val + entry_val * price_return * direction * eff_lev - commission
+                    capital += (
+                        entry_val + entry_val * price_return * direction * eff_lev - commission
+                    )
                 else:
                     capital += entry_val  # return capital as-is for incomplete predictions
                 completed.append(trade)

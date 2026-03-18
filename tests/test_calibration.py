@@ -249,17 +249,19 @@ class TestDirectionalCalibrator:
         daily = []
         for _ in range(300):
             direction = rng.choice(["BUY", "SELL", "HOLD"])
-            daily.append({
-                "date": "2024-01-01",
-                "current_price": 100.0,
-                "predictions": {
-                    "5": {
-                        "predicted_signal": direction,
-                        "confidence": float(rng.uniform(0.4, 0.9)),
-                        "is_correct": bool(rng.integers(0, 2)),
-                    }
-                },
-            })
+            daily.append(
+                {
+                    "date": "2024-01-01",
+                    "current_price": 100.0,
+                    "predictions": {
+                        "5": {
+                            "predicted_signal": direction,
+                            "confidence": float(rng.uniform(0.4, 0.9)),
+                            "is_correct": bool(rng.integers(0, 2)),
+                        }
+                    },
+                }
+            )
 
         results = [{"daily_predictions": daily}]
         dc = DirectionalCalibrator.from_backtest_results(results, horizon=5)

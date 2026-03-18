@@ -16,12 +16,12 @@ from backtesting.results import BacktestResult
 from signals.direction import Direction as Signal
 
 # ── colour / style constants ─────────────────────────────────────────────────
-_BUY_COLOR = "#2ecc71"   # green
+_BUY_COLOR = "#2ecc71"  # green
 _SELL_COLOR = "#e74c3c"  # red
 _HOLD_COLOR = "#95a5a6"  # grey
 _PRICE_COLOR = "#2c3e50"
 _EQUITY_COLORS = ["#3498db", "#e67e22", "#9b59b6", "#1abc9c", "#f39c12", "#2ecc71", "#16a085"]
-_CONF_BASE = "#5d6d7e"   # neutral slate for confidence legend circles
+_CONF_BASE = "#5d6d7e"  # neutral slate for confidence legend circles
 
 _MIN_MARKER_SIZE = 40
 _MAX_MARKER_SIZE = 220
@@ -29,10 +29,7 @@ _MAX_MARKER_SIZE = 220
 
 def _marker_sizes(confidences: list[float]) -> list[float]:
     """Scale confidence (0-1) linearly to marker-point² area."""
-    return [
-        _MIN_MARKER_SIZE + (_MAX_MARKER_SIZE - _MIN_MARKER_SIZE) * c
-        for c in confidences
-    ]
+    return [_MIN_MARKER_SIZE + (_MAX_MARKER_SIZE - _MIN_MARKER_SIZE) * c for c in confidences]
 
 
 def _conf_colors(confidences: list[float], base_hex: str) -> list[tuple]:
@@ -110,7 +107,8 @@ def plot_backtest(
 
     # ── figure layout ─────────────────────────────────────────────────────────
     fig, (ax_price, ax_equity) = plt.subplots(
-        2, 1,
+        2,
+        1,
         figsize=(14, 9),
         gridspec_kw={"height_ratios": [3, 2]},
         sharex=False,
@@ -125,17 +123,38 @@ def plot_backtest(
     ax_price.plot(dates, prices, color=_PRICE_COLOR, linewidth=1.2, zorder=2, label="Price")
 
     if hold_dates:
-        ax_price.scatter(hold_dates, hold_prices, s=_marker_sizes(hold_confs),
-                         c=_conf_colors(hold_confs, _HOLD_COLOR), alpha=0.5, zorder=3,
-                         marker="o", label="HOLD")
+        ax_price.scatter(
+            hold_dates,
+            hold_prices,
+            s=_marker_sizes(hold_confs),
+            c=_conf_colors(hold_confs, _HOLD_COLOR),
+            alpha=0.5,
+            zorder=3,
+            marker="o",
+            label="HOLD",
+        )
     if buy_dates:
-        ax_price.scatter(buy_dates, buy_prices, s=_marker_sizes(buy_confs),
-                         c=_conf_colors(buy_confs, _BUY_COLOR), alpha=0.9, zorder=4,
-                         marker="^", label="BUY")
+        ax_price.scatter(
+            buy_dates,
+            buy_prices,
+            s=_marker_sizes(buy_confs),
+            c=_conf_colors(buy_confs, _BUY_COLOR),
+            alpha=0.9,
+            zorder=4,
+            marker="^",
+            label="BUY",
+        )
     if sell_dates:
-        ax_price.scatter(sell_dates, sell_prices, s=_marker_sizes(sell_confs),
-                         c=_conf_colors(sell_confs, _SELL_COLOR), alpha=0.9, zorder=4,
-                         marker="v", label="SELL")
+        ax_price.scatter(
+            sell_dates,
+            sell_prices,
+            s=_marker_sizes(sell_confs),
+            c=_conf_colors(sell_confs, _SELL_COLOR),
+            alpha=0.9,
+            zorder=4,
+            marker="v",
+            label="SELL",
+        )
 
     # confidence legend
     for conf_pct in [50, 70, 90]:
@@ -159,12 +178,18 @@ def plot_backtest(
         eq_dates = [d for d, _ in m.equity_curve]
         eq_values = [v for _, v in m.equity_curve]
         color = _EQUITY_COLORS[idx % len(_EQUITY_COLORS)]
-        ax_equity.plot(eq_dates, eq_values, color=color, linewidth=1.4,
-                       label=f"{h}-day (net {m.net_total_return:+.1f}%)")
+        ax_equity.plot(
+            eq_dates,
+            eq_values,
+            color=color,
+            linewidth=1.4,
+            label=f"{h}-day (net {m.net_total_return:+.1f}%)",
+        )
 
     bh = result.buy_hold_return
-    ax_equity.axhline(bh, color="black", linestyle="--", linewidth=1,
-                      label=f"Buy & Hold {bh:+.1f}%")
+    ax_equity.axhline(
+        bh, color="black", linestyle="--", linewidth=1, label=f"Buy & Hold {bh:+.1f}%"
+    )
     ax_equity.axhline(0, color="grey", linestyle=":", linewidth=0.8)
     ax_equity.set_ylabel("Cumulative net return (%)", fontsize=10)
     ax_equity.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))

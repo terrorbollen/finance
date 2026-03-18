@@ -6,6 +6,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from backtesting.backtester import Backtester
@@ -16,6 +17,7 @@ from signals.direction import Direction
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_metrics.py style)
 # ---------------------------------------------------------------------------
+
 
 def _pred(
     predicted: Signal,
@@ -52,6 +54,7 @@ def _calc(**kwargs) -> MetricsCalculator:
 # Signal / Direction enum unification
 # ---------------------------------------------------------------------------
 
+
 class TestSignalDirectionEnum:
     def test_signal_is_direction(self):
         assert Signal is Direction
@@ -83,6 +86,7 @@ class TestSignalDirectionEnum:
 # ---------------------------------------------------------------------------
 # Leverage scaling
 # ---------------------------------------------------------------------------
+
 
 class TestLeverage:
     def test_1x_leverage_unchanged(self):
@@ -159,6 +163,7 @@ class TestLeverage:
 # Annualization factor
 # ---------------------------------------------------------------------------
 
+
 class TestAnnualizationFactor:
     def test_uses_252_bars(self):
         returns = [1.0, 2.0, -1.0, 3.0, 0.5] * 10
@@ -173,9 +178,11 @@ class TestAnnualizationFactor:
 # Threshold loading from ModelConfig
 # ---------------------------------------------------------------------------
 
+
 class TestThresholdLoading:
     def _write_config(self, path: str, buy_threshold: float, sell_threshold: float) -> None:
         from models.config import ModelConfig
+
         cfg = ModelConfig(
             feature_columns=[f"f{i}" for i in range(5)],
             feature_mean=[0.0] * 5,
@@ -247,11 +254,13 @@ class TestThresholdLoading:
 # Feature mismatch — calls real backtester.run() code path
 # ---------------------------------------------------------------------------
 
+
 class TestFeatureMismatch:
     """Patches StockDataFetcher so run() hits the real feature-check code."""
 
     def _make_df(self, columns: list[str], n_rows: int = 60) -> "pd.DataFrame":
         import pandas as pd
+
         dates = pd.date_range("2023-01-02", periods=n_rows, freq="B")
         data = {c: np.ones(n_rows) for c in columns}
         return pd.DataFrame(data, index=dates)
@@ -293,10 +302,14 @@ class TestFeatureMismatch:
         mock_fetcher.fetch.return_value = df
         mock_fetcher.fetch_cross_asset_data.return_value = {}
         monkeypatch.setattr(bt_module, "StockDataFetcher", lambda **_: mock_fetcher)
-        monkeypatch.setattr(bt_module, "FeatureEngineer", lambda df, **_: MagicMock(
-            add_all_features=lambda: df,
-            get_feature_columns=lambda: list(df.columns),
-        ))
+        monkeypatch.setattr(
+            bt_module,
+            "FeatureEngineer",
+            lambda df, **_: MagicMock(
+                add_all_features=lambda: df,
+                get_feature_columns=lambda: list(df.columns),
+            ),
+        )
 
         bt = self._backtester(feature_columns)
         with pytest.raises(ValueError, match="Too many features missing"):
@@ -315,10 +328,14 @@ class TestFeatureMismatch:
         mock_fetcher.fetch.return_value = df
         mock_fetcher.fetch_cross_asset_data.return_value = {}
         monkeypatch.setattr(bt_module, "StockDataFetcher", lambda **_: mock_fetcher)
-        monkeypatch.setattr(bt_module, "FeatureEngineer", lambda df, **_: MagicMock(
-            add_all_features=lambda: df,
-            get_feature_columns=lambda: list(df.columns),
-        ))
+        monkeypatch.setattr(
+            bt_module,
+            "FeatureEngineer",
+            lambda df, **_: MagicMock(
+                add_all_features=lambda: df,
+                get_feature_columns=lambda: list(df.columns),
+            ),
+        )
 
         bt = self._backtester(feature_columns)
         # Should not raise — runs to completion (may fail later for unrelated reasons)
@@ -331,6 +348,7 @@ class TestFeatureMismatch:
 # ---------------------------------------------------------------------------
 # Equity curve
 # ---------------------------------------------------------------------------
+
 
 class TestEquityCurve:
     def test_curve_sorted_chronologically(self):
@@ -362,8 +380,8 @@ class TestEquityCurve:
         ]
         result = _calc(leverage=2.0)._calculate_trading_metrics(preds)
         curve = result["equity_curve"]
-        assert curve[0][1] == pytest.approx(4.0)   # 2.0 * 2x
-        assert curve[1][1] == pytest.approx(6.0)   # (2.0 + 1.0) * 2x
+        assert curve[0][1] == pytest.approx(4.0)  # 2.0 * 2x
+        assert curve[1][1] == pytest.approx(6.0)  # (2.0 + 1.0) * 2x
 
     def test_curve_empty_when_all_hold(self):
         preds = [_pred(Signal.HOLD, Signal.HOLD)]
@@ -384,15 +402,18 @@ class TestEquityCurve:
 # ModelConfig.checkpoint_paths
 # ---------------------------------------------------------------------------
 
+
 class TestCheckpointPaths:
     def test_expected_paths(self):
         from models.config import ModelConfig
+
         paths = ModelConfig.checkpoint_paths()
         assert paths["weights"] == "checkpoints/signal_model.weights.h5"
         assert paths["calibration"] == "checkpoints/calibration.json"
 
     def test_all_keys_present(self):
         from models.config import ModelConfig
+
         paths = ModelConfig.checkpoint_paths()
         for key in ("weights", "config", "calibration", "calibration_directional"):
             assert key in paths

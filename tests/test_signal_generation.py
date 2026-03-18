@@ -1,5 +1,6 @@
 """Tests for signal generation classes."""
 
+import numpy as np
 import pytest
 
 from signals.generator import Direction, Signal, SignalGenerator
@@ -279,3 +280,64 @@ class TestAtrTakeProfit:
         target_small, _, _ = self._run(gen, Direction.BUY, atr_pct=1.0, predicted_change=0.0)
         target_large, _, _ = self._run(gen, Direction.BUY, atr_pct=2.0, predicted_change=0.0)
         assert target_large > target_small
+
+
+class TestCheckOod:
+    """Tests for the out-of-distribution feature detection warning."""
+
+    def _gen(self, n_features: int = 4) -> SignalGenerator:
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.feature_mean = np.zeros(n_features)
+        gen.feature_std = np.ones(n_features)
+        return gen
+
+    def test_no_warning_when_all_in_distribution(self, capsys):
+        gen = self._gen(n_features=3)
+        features_norm = np.array([[0.5, -1.0, 2.9]])  # all within ±3σ
+        gen._check_ood(features_norm, ["a", "b", "c"])
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_warning_printed_to_stderr_for_ood_feature(self, capsys):
+        gen = self._gen(n_features=3)
+        # Feature "b" is 4.5σ from mean → OOD
+        features_norm = np.array([[1.0, 4.5, 0.0]])
+        gen._check_ood(features_norm, ["a", "b", "c"])
+        captured = capsys.readouterr()
+        assert "OOD WARNING" in captured.err
+        assert "b" in captured.err
+        assert "+4.5σ" in captured.err
+
+    def test_multiple_ood_features_all_named(self, capsys):
+        gen = self._gen(n_features=3)
+        features_norm = np.array([[-5.0, 0.0, 3.5]])  # a and c are OOD
+        gen._check_ood(features_norm, ["alpha", "beta", "gamma"])
+        captured = capsys.readouterr()
+        assert "alpha" in captured.err
+        assert "gamma" in captured.err
+        assert "beta" not in captured.err
+
+    def test_most_recent_row_is_checked(self, capsys):
+        gen = self._gen(n_features=2)
+        # Only the last row is extreme; earlier rows are fine
+        features_norm = np.array([[0.0, 0.0], [0.0, 0.0], [10.0, 0.0]])
+        gen._check_ood(features_norm, ["x", "y"])
+        captured = capsys.readouterr()
+        assert "OOD WARNING" in captured.err
+
+    def test_no_warning_without_training_stats(self, capsys):
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.feature_mean = None
+        gen.feature_std = None
+        features_norm = np.array([[100.0, -50.0]])
+        gen._check_ood(features_norm, ["x", "y"])
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_custom_threshold_respected(self, capsys):
+        gen = self._gen(n_features=2)
+        # 2.5σ is fine at threshold=3.0 but triggers at threshold=2.0
+        features_norm = np.array([[2.5, 0.0]])
+        gen._check_ood(features_norm, ["x", "y"], threshold=2.0)
+        captured = capsys.readouterr()
+        assert "OOD WARNING" in captured.err

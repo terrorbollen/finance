@@ -4,6 +4,46 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18
+
+### Add macro indicators: oil prices and interest rates (F5)
+
+Added Brent crude oil (`BZ=F`) and US 10Y Treasury yield (`^TNX`) as macro features alongside the existing VIX/VSTOXX volatility features. `fetch_cross_asset_data()` in `fetcher.py` now fetches both series with the same graceful fallback-to-zeros pattern. `FeatureEngineer._add_macro_features()` produces four new columns: `oil_level` (Brent normalised by 252-day rolling mean, capturing high/low oil regimes), `oil_1d_change` (daily % change, capturing supply shocks), `rate_level` (raw 10Y yield in %, a regime indicator for financial conditions), and `rate_1d_change` (daily absolute change in yield). All four fall back to neutral values when reference data is unavailable so no rows are silently dropped. Retraining is required to incorporate these features into live signals.
+
+---
+
+## 2026-03-18
+
+### Add --export-equity CLI flag to backtest command (B9)
+
+Added `--export-equity BASE_PATH` to the `backtest` subcommand. After a backtest completes, it writes one CSV per horizon to `BASE_PATH_h{N}d.csv` (e.g. `results/equity_h5d.csv`), each with `date` and `cumulative_net_return_pct` columns. Horizons with no trades are silently skipped. The `export_equity_curve_csv()` method already existed on `BacktestResult`; this change wires it to the CLI so users can plot equity curves in external tools without parsing the full JSON export.
+
+---
+
+## 2026-03-18
+
+### Document calibration absence in walk-forward retrain path (B13)
+
+`INVARIANTS.md` forbids `backtesting/` from importing `signals/`, so the backtester cannot load a `ConfidenceCalibrator`. This means confidence scores are always raw softmax outputs — there was never a stale calibrator being applied after retraining. Added an explicit comment in `_retrain_model()` documenting this constraint so future contributors don't inadvertently add a cross-module import to "fix" it. Also fixed a pre-existing `F821` ruff error (`pd` used as a string annotation before it was imported) in `tests/test_new_features.py`.
+
+---
+
+## 2026-03-18
+
+### Add HyperparameterTuner for systematic hyperparameter search (M3)
+
+Added `HyperparameterTuner` class to `models/training.py`. It runs random search over a configurable param grid (`sequence_length`, `buy_threshold`, `batch_size`, `use_focal_loss` by default), trains a fresh `ModelTrainer` per trial, and ranks results by best validation accuracy. Every trial is tracked in MLflow as a nested child run under a single parent `hyperparameter-search` run, making it easy to compare trials in the UI. The search uses validation accuracy (not test accuracy) to avoid selection bias on the holdout set. Usage: `HyperparameterTuner().search(tickers, n_trials=10)`.
+
+---
+
+## 2026-03-18
+
+### Make calibration discrepancy explicit in backtest output (B12)
+
+`Backtester` cannot apply isotonic calibration because `INVARIANTS.md` forbids `backtesting/` from importing `signals/`. Rather than silently report raw confidence values that don't match what live signals produce, `run()` now prints a clear note at the start of every backtest explaining that confidence scores are pre-calibration and will differ from `generate`/`scan` output. This prevents users from mistaking raw softmax calibration buckets for production-quality confidence estimates.
+
+---
+
 ## 2026-03-18 (session 16)
 
 ### Report ADX-missing predictions in regime breakdown (B14)
@@ -17,6 +57,14 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 ### Add VIX/VSTOXX volatility regime features (F4)
 
 `fetch_cross_asset_data()` in `fetcher.py` now also fetches VIX (`^VIX`) and VSTOXX (`^V2TX`) alongside the existing OMXS30/FX series. `FeatureEngineer` now stores `reference_data` (previously discarded) and a new `_add_volatility_features()` method produces five new columns: `vix_level` and `vstoxx_level` (current vol index normalised by its 252-day rolling mean — >1 means elevated fear), `vix_1d_change` and `vstoxx_1d_change` (daily % change, capturing sudden regime shifts), and `vix_stock_corr` (20-day rolling correlation between stock returns and VIX changes — negative values identify risk-off stocks). When VIX/VSTOXX data is unavailable, all columns fall back to neutral constants so `dropna()` does not discard rows. Retraining required to incorporate the 5 new features (input_dim changes from 8 to 13).
+
+---
+
+## 2026-03-18 (session 15)
+
+### Out-of-distribution feature detection at inference time (F6)
+
+Added `_check_ood()` to `SignalGenerator` (`signals/generator.py`). After normalising live features with training statistics, the method inspects the most recent bar's normalised values and prints a warning to stderr for any feature that exceeds ±3σ. The warning names each out-of-range feature and its normalised deviation (e.g. `rsi (+4.2σ)`) so users can see exactly what regime shift is occurring. Signal generation continues — the check is advisory only. The check is skipped gracefully when training stats are unavailable. Called automatically in `generate()` after normalization. 6 new unit tests cover: no-warning in-distribution, single OOD, multiple OOD, last-row-only check, missing stats, and custom threshold.
 
 ---
 

@@ -10,6 +10,7 @@ import pytest
 # yfinance network guard
 # ---------------------------------------------------------------------------
 
+
 def _synthetic_yfinance_df(n: int = 1500) -> pd.DataFrame:
     """Return a synthetic OHLCV DataFrame in yfinance's native format.
 

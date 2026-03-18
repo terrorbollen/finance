@@ -143,6 +143,7 @@ class ClassMetrics:
 @dataclass
 class TradeRecord:
     """Single simulated trade outcome."""
+
     date: date
     signal: Signal
     gross_pct: float
@@ -207,7 +208,9 @@ class HorizonMetrics:
     net_return_ci: tuple[float, float] = (0.0, 0.0)
 
     # Temporal and regime breakdowns
-    temporal_accuracy: list[tuple[date, float]] = field(default_factory=list)  # (month_start, accuracy)
+    temporal_accuracy: list[tuple[date, float]] = field(
+        default_factory=list
+    )  # (month_start, accuracy)
     regime_metrics: dict[str, dict] = field(default_factory=dict)  # ADX regime → metrics
 
     # Per-trade records
@@ -263,7 +266,9 @@ class BacktestResult:
     trading_days: int
     buy_hold_return: float
     leverage: float = 1.0
-    benchmark_return: float | None = None  # OMXS30 return over the same period (None if unavailable)
+    benchmark_return: float | None = (
+        None  # OMXS30 return over the same period (None if unavailable)
+    )
 
     daily_predictions: list[DailyPrediction] = field(default_factory=list)
     horizon_metrics: dict[int, HorizonMetrics] = field(default_factory=dict)
@@ -367,12 +372,22 @@ class BacktestResult:
         lines.append("")
         lines.append("VALIDATION DIAGNOSTICS")
         lines.append("-" * 80)
-        lines.append(f"{'Horizon':<10} {'Brier':<8} {'ECE':<8} {'Win CI (95%)':<20} {'Sharpe CI (95%)':<20} {'BH p-val':<10} {'Regime coverage'}")
+        lines.append(
+            f"{'Horizon':<10} {'Brier':<8} {'ECE':<8} {'Win CI (95%)':<20} {'Sharpe CI (95%)':<20} {'BH p-val':<10} {'Regime coverage'}"
+        )
         lines.append("-" * 80)
         for horizon in sorted(self.horizon_metrics.keys()):
             m = self.horizon_metrics[horizon]
-            win_ci = f"[{m.win_rate_ci[0]*100:.1f}%, {m.win_rate_ci[1]*100:.1f}%]" if m.win_rate_ci != (0.0, 0.0) else "N/A"
-            sharpe_ci = f"[{m.sharpe_ci[0]:.2f}, {m.sharpe_ci[1]:.2f}]" if m.sharpe_ci != (0.0, 0.0) else "N/A"
+            win_ci = (
+                f"[{m.win_rate_ci[0] * 100:.1f}%, {m.win_rate_ci[1] * 100:.1f}%]"
+                if m.win_rate_ci != (0.0, 0.0)
+                else "N/A"
+            )
+            sharpe_ci = (
+                f"[{m.sharpe_ci[0]:.2f}, {m.sharpe_ci[1]:.2f}]"
+                if m.sharpe_ci != (0.0, 0.0)
+                else "N/A"
+            )
             bh_str = f"{m.bh_corrected_pvalue:.3f}"
             regime_parts = [
                 f"{k}:{v['n_trades']}t" for k, v in m.regime_metrics.items() if "n_trades" in v
@@ -381,12 +396,12 @@ class BacktestResult:
             if no_adx:
                 regime_parts.append(f"no_adx:{no_adx}")
             regime_str = ", ".join(regime_parts) if regime_parts else "N/A (no ADX)"
-            lines.append(f"{horizon}-day{'':<5} {m.brier_score:.3f}   {m.ece:.3f}   {win_ci:<20} {sharpe_ci:<20} {bh_str:<10} {regime_str}")
+            lines.append(
+                f"{horizon}-day{'':<5} {m.brier_score:.3f}   {m.ece:.3f}   {win_ci:<20} {sharpe_ci:<20} {bh_str:<10} {regime_str}"
+            )
         lines.extend(["", "MONTE CARLO SIMULATION (trade-order permutations)"])
         lines.append("-" * 80)
-        lines.append(
-            "Shuffles realized trade returns 1 000 times to test path-dependency."
-        )
+        lines.append("Shuffles realized trade returns 1 000 times to test path-dependency.")
         lines.append(
             "Observed pct = where your result ranks vs random orderings (>50 is above average)."
         )
@@ -400,12 +415,8 @@ class BacktestResult:
                 lines.append(f"{horizon}-day{'':<5} N/A (fewer than 5 trades)")
                 continue
             mc = m.monte_carlo
-            ret_str = (
-                f"{mc.mean_total_return:+.1f}% [{mc.p5_total_return:+.1f}%, {mc.p95_total_return:+.1f}%]"
-            )
-            sharpe_str = (
-                f"{mc.mean_sharpe:.2f} [{mc.p5_sharpe:.2f}, {mc.p95_sharpe:.2f}]"
-            )
+            ret_str = f"{mc.mean_total_return:+.1f}% [{mc.p5_total_return:+.1f}%, {mc.p95_total_return:+.1f}%]"
+            sharpe_str = f"{mc.mean_sharpe:.2f} [{mc.p5_sharpe:.2f}, {mc.p95_sharpe:.2f}]"
             lines.append(
                 f"{horizon}-day{'':<5} {ret_str:<30} {mc.observed_total_return_pct:.0f}%{'':<5} "
                 f"{sharpe_str:<30} {mc.observed_sharpe_pct:.0f}%"
@@ -458,8 +469,16 @@ class BacktestResult:
             writer.writerow(["horizon_days", "date", "signal", "gross_pct", "net_pct", "is_winner"])
             for h, m in sorted(self.horizon_metrics.items()):
                 for t in m.trades:
-                    writer.writerow([h, t.date.isoformat(), t.signal.name,
-                                      round(t.gross_pct, 4), round(t.net_pct, 4), t.is_winner])
+                    writer.writerow(
+                        [
+                            h,
+                            t.date.isoformat(),
+                            t.signal.name,
+                            round(t.gross_pct, 4),
+                            round(t.net_pct, 4),
+                            t.is_winner,
+                        ]
+                    )
 
     def export_csv(self, path: str):
         """Export predictions to CSV file."""

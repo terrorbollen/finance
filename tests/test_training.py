@@ -9,6 +9,7 @@ from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 # M7 — label index arithmetic
 # ---------------------------------------------------------------------------
 
+
 def _make_ohlcv(close_prices: list[float]) -> pd.DataFrame:
     """Minimal OHLCV DataFrame from a list of close prices."""
     n = len(close_prices)
@@ -26,7 +27,9 @@ def _make_ohlcv(close_prices: list[float]) -> pd.DataFrame:
     )
 
 
-def _raw_labels(close_prices: list[float], horizon: int, buy_thresh: float, sell_thresh: float) -> np.ndarray:
+def _raw_labels(
+    close_prices: list[float], horizon: int, buy_thresh: float, sell_thresh: float
+) -> np.ndarray:
     """
     Reproduce the label-creation kernel from prepare_data() in isolation so we
     can assert correctness independently of the full training pipeline.
@@ -110,7 +113,7 @@ class TestLabelCreation:
         prices = list(range(1, 11))  # 10 prices
         lbl = _raw_labels(prices, horizon=h, buy_thresh=0.05, sell_thresh=-0.05)
         # Last h rows should be NaN (no future data)
-        assert np.all(np.isnan(lbl[len(prices) - h:])), "Last h rows must be NaN"
+        assert np.all(np.isnan(lbl[len(prices) - h :])), "Last h rows must be NaN"
 
     def test_conflict_resolved_by_magnitude(self):
         """When both BUY and SELL thresholds are crossed, larger magnitude wins."""

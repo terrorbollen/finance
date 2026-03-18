@@ -1,6 +1,7 @@
 """Signal generation logic combining model predictions into actionable signals."""
 
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -187,9 +188,7 @@ class SignalGenerator:
                 self.directional_calibrator = DirectionalCalibrator.load(
                     self.directional_calibration_path
                 )
-                print(
-                    f"Loaded directional calibration from {self.directional_calibration_path}"
-                )
+                print(f"Loaded directional calibration from {self.directional_calibration_path}")
             except Exception as e:
                 print(f"Warning: Could not load directional calibration: {e}")
                 self.directional_calibrator = None
@@ -279,6 +278,9 @@ class SignalGenerator:
             std = features.std(axis=0) + 1e-8
             features_norm = (features - mean) / std
 
+        # Out-of-distribution check: warn if any live feature exceeds ±3σ
+        self._check_ood(features_norm, feature_cols)
+
         # Create sequence from most recent data
         if len(features_norm) < self.sequence_length:
             raise ValueError(
@@ -297,9 +299,8 @@ class SignalGenerator:
         predicted_change = float(price_target[0])
 
         # Apply confidence calibration — directional takes priority over global
-        if (
-            self.directional_calibrator is not None
-            and self.directional_calibrator.is_fitted_for(direction.value)
+        if self.directional_calibrator is not None and self.directional_calibrator.is_fitted_for(
+            direction.value
         ):
             calibrated_confidence = self.directional_calibrator.calibrate(
                 direction.value, raw_confidence
@@ -424,6 +425,43 @@ class SignalGenerator:
             return Direction.HOLD
 
         return direction
+
+    def _check_ood(
+        self,
+        features_norm: np.ndarray,
+        feature_cols: list[str],
+        threshold: float = 3.0,
+    ) -> None:
+        """Warn when live features fall outside the training distribution.
+
+        Checks the most recent bar's normalized values.  Any feature whose
+        absolute normalized value exceeds ``threshold`` standard deviations
+        was never seen during training; predictions in that region are
+        extrapolation, not interpolation.
+
+        The warning is advisory — signal generation continues unaffected.
+
+        Args:
+            features_norm: Normalized feature matrix, shape (T, n_features).
+                           The last row is the bar used for the current prediction.
+            feature_cols: Names of the feature columns, aligned with axis-1.
+            threshold: Number of standard deviations beyond which a feature is
+                       flagged as out-of-distribution (default: 3.0).
+        """
+        if self.feature_mean is None or self.feature_std is None:
+            return  # can't check without training stats
+
+        last_row = features_norm[-1]  # most recent bar
+        ood_mask = np.abs(last_row) > threshold
+        if not np.any(ood_mask):
+            return
+
+        ood_items = [f"{feature_cols[i]} ({last_row[i]:+.1f}σ)" for i in np.where(ood_mask)[0]]
+        print(
+            f"OOD WARNING: {len(ood_items)} feature(s) outside ±{threshold:.0f}σ of training distribution — "
+            f"signal may be extrapolation: {', '.join(ood_items)}",
+            file=sys.stderr,
+        )
 
     def _kelly_position_size(
         self,

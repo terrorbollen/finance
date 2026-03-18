@@ -20,6 +20,10 @@ EXPECTED_FEATURES = [
     "vix_stock_corr",
     "vstoxx_level",
     "vstoxx_1d_change",
+    "oil_level",
+    "oil_1d_change",
+    "rate_level",
+    "rate_1d_change",
 ]
 
 
@@ -56,7 +60,7 @@ class TestFeatureEngineer:
         for col in eng.get_feature_columns():
             assert not np.isinf(result[col]).any(), f"{col} contains inf"
 
-    def test_exactly_8_features(self, sample_ohlcv_data):
+    def test_feature_columns(self, sample_ohlcv_data):
         eng = FeatureEngineer(sample_ohlcv_data)
         eng.add_all_features()
         assert eng.get_feature_columns() == EXPECTED_FEATURES
@@ -173,3 +177,75 @@ class TestADX:
         adx = eng.df["adx_14"].dropna()
         assert adx.min() >= 0
         assert adx.max() <= 100
+
+
+class TestMacroFeatures:
+    """Tests for _add_macro_features() — oil and interest rate indicators."""
+
+    def _make_ref(self, values: "np.ndarray", index: "pd.DatetimeIndex") -> pd.DataFrame:
+        return pd.DataFrame({"close": values}, index=index)
+
+    def test_fallback_when_no_reference_data(self, sample_ohlcv_data):
+        """Without reference_data, neutral fallback values must be set (no NaNs)."""
+        eng = FeatureEngineer(sample_ohlcv_data)
+        eng._add_macro_features()
+        assert eng.df["oil_level"].eq(1.0).all()
+        assert eng.df["oil_1d_change"].eq(0.0).all()
+        assert eng.df["rate_level"].eq(0.0).all()
+        assert eng.df["rate_1d_change"].eq(0.0).all()
+
+    def test_oil_level_normalized(self, sample_ohlcv_data):
+        """oil_level should be close to 1.0 when oil price equals its rolling mean."""
+        rng = np.random.default_rng(7)
+        # Slowly trending oil price so level stays near 1
+        oil_prices = 80.0 + np.cumsum(rng.standard_normal(len(sample_ohlcv_data)) * 0.3)
+        ref = self._make_ref(oil_prices, sample_ohlcv_data.index)
+        eng = FeatureEngineer(sample_ohlcv_data, reference_data={"oil": ref})
+        eng._add_macro_features()
+        level = eng.df["oil_level"].dropna()
+        assert level.notna().all()
+        assert (level >= 0).all() and (level <= 5).all()
+
+    def test_oil_1d_change_units(self, sample_ohlcv_data):
+        """oil_1d_change is in % — a 1% daily move should register as ~1.0."""
+        oil_prices = np.full(len(sample_ohlcv_data), 80.0)
+        oil_prices[5] = 80.8  # +1% on day 5
+        ref = self._make_ref(oil_prices, sample_ohlcv_data.index)
+        eng = FeatureEngineer(sample_ohlcv_data, reference_data={"oil": ref})
+        eng._add_macro_features()
+        assert abs(eng.df["oil_1d_change"].iloc[5] - 1.0) < 0.01
+
+    def test_rate_level_is_raw_yield(self, sample_ohlcv_data):
+        """rate_level should equal the raw yield value (e.g. 4.5 → 4.5)."""
+        rates = np.full(len(sample_ohlcv_data), 4.5)
+        ref = self._make_ref(rates, sample_ohlcv_data.index)
+        eng = FeatureEngineer(sample_ohlcv_data, reference_data={"rates": ref})
+        eng._add_macro_features()
+        assert eng.df["rate_level"].dropna().eq(4.5).all()
+
+    def test_rate_1d_change_basis_points(self, sample_ohlcv_data):
+        """rate_1d_change is an absolute diff in pp — a 0.25pp rise should give 0.25."""
+        rates = np.full(len(sample_ohlcv_data), 4.0)
+        rates[10:] = 4.25  # +25bp from row 10 onward
+        ref = self._make_ref(rates, sample_ohlcv_data.index)
+        eng = FeatureEngineer(sample_ohlcv_data, reference_data={"rates": ref})
+        eng._add_macro_features()
+        assert abs(eng.df["rate_1d_change"].iloc[10] - 0.25) < 1e-9
+
+    def test_no_nans_in_add_all_features(self, sample_ohlcv_data):
+        """add_all_features() with macro reference data must not produce NaNs."""
+        rng = np.random.default_rng(99)
+        n = len(sample_ohlcv_data)
+        oil_ref = self._make_ref(80 + rng.standard_normal(n) * 2, sample_ohlcv_data.index)
+        rate_ref = self._make_ref(4.0 + rng.standard_normal(n) * 0.1, sample_ohlcv_data.index)
+        eng = FeatureEngineer(
+            sample_ohlcv_data,
+            reference_data={"oil": oil_ref, "rates": rate_ref},
+        )
+        result = eng.add_all_features()
+        assert (
+            not result[["oil_level", "oil_1d_change", "rate_level", "rate_1d_change"]]
+            .isna()
+            .any()
+            .any()
+        )

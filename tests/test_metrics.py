@@ -13,6 +13,7 @@ from backtesting.results import HorizonPrediction, Signal
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _pred(
     predicted: Signal,
     actual: Signal,
@@ -35,7 +36,12 @@ def _pred(
 
 
 def _calc(**kwargs) -> MetricsCalculator:
-    defaults = {"buy_threshold": 0.02, "sell_threshold": -0.02, "commission_pct": 0.0, "slippage_factor": 0.0}
+    defaults = {
+        "buy_threshold": 0.02,
+        "sell_threshold": -0.02,
+        "commission_pct": 0.0,
+        "slippage_factor": 0.0,
+    }
     defaults.update(kwargs)
     return MetricsCalculator(**defaults)
 
@@ -43,6 +49,7 @@ def _calc(**kwargs) -> MetricsCalculator:
 # ---------------------------------------------------------------------------
 # Accuracy
 # ---------------------------------------------------------------------------
+
 
 class TestAccuracy:
     def test_all_correct(self):
@@ -70,6 +77,7 @@ class TestAccuracy:
 # Class metrics (precision / recall / support)
 # ---------------------------------------------------------------------------
 
+
 class TestClassMetrics:
     def test_perfect_buy_precision_recall(self):
         preds = [_pred(Signal.BUY, Signal.BUY) for _ in range(3)]
@@ -89,8 +97,8 @@ class TestClassMetrics:
 
     def test_mixed(self):
         preds = [
-            _pred(Signal.BUY, Signal.BUY),    # TP for BUY
-            _pred(Signal.BUY, Signal.SELL),   # FP for BUY, FN for SELL
+            _pred(Signal.BUY, Signal.BUY),  # TP for BUY
+            _pred(Signal.BUY, Signal.SELL),  # FP for BUY, FN for SELL
             _pred(Signal.SELL, Signal.SELL),  # TP for SELL
         ]
         m = _calc()._calculate_class_metrics(preds)
@@ -105,6 +113,7 @@ class TestClassMetrics:
 # ---------------------------------------------------------------------------
 # Calibration buckets
 # ---------------------------------------------------------------------------
+
 
 class TestCalibration:
     def test_high_confidence_bucket_populated(self):
@@ -131,6 +140,7 @@ class TestCalibration:
 # ---------------------------------------------------------------------------
 # Price metrics (MAE / RMSE)
 # ---------------------------------------------------------------------------
+
 
 class TestPriceMetrics:
     def test_perfect_prediction(self):
@@ -166,6 +176,7 @@ class TestPriceMetrics:
 # ---------------------------------------------------------------------------
 # Risk metrics (Sharpe / Sortino / max drawdown / Calmar)
 # ---------------------------------------------------------------------------
+
 
 class TestRiskMetrics:
     def test_single_return_gives_zeros(self):
@@ -230,6 +241,7 @@ class TestRiskMetrics:
 # Trading metrics (win rate, gross/net returns, direction)
 # ---------------------------------------------------------------------------
 
+
 class TestTradingMetrics:
     def test_all_hold_no_trades(self):
         preds = [_pred(Signal.HOLD, Signal.HOLD, actual_change=2.0) for _ in range(5)]
@@ -263,10 +275,10 @@ class TestTradingMetrics:
 
     def test_win_rate_calculation(self):
         preds = [
-            _pred(Signal.BUY, Signal.BUY, actual_change=2.0),   # win
-            _pred(Signal.BUY, Signal.BUY, actual_change=1.0),   # win
-            _pred(Signal.BUY, Signal.SELL, actual_change=-1.0), # loss
-            _pred(Signal.BUY, Signal.SELL, actual_change=-2.0), # loss
+            _pred(Signal.BUY, Signal.BUY, actual_change=2.0),  # win
+            _pred(Signal.BUY, Signal.BUY, actual_change=1.0),  # win
+            _pred(Signal.BUY, Signal.SELL, actual_change=-1.0),  # loss
+            _pred(Signal.BUY, Signal.SELL, actual_change=-2.0),  # loss
         ]
         result = _calc()._calculate_trading_metrics(preds)
         assert result["win_rate"] == pytest.approx(0.5)
@@ -296,6 +308,7 @@ class TestTradingMetrics:
 # determine_actual_signal
 # ---------------------------------------------------------------------------
 
+
 class TestDetermineActualSignal:
     def test_above_buy_threshold(self):
         calc = MetricsCalculator(buy_threshold=0.02, sell_threshold=-0.02)
@@ -322,6 +335,7 @@ class TestDetermineActualSignal:
 # ---------------------------------------------------------------------------
 # calculate_horizon_metrics (integration)
 # ---------------------------------------------------------------------------
+
 
 class TestCalculateHorizonMetrics:
     def test_empty_list_returns_zero_metrics(self):
