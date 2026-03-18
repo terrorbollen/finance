@@ -308,6 +308,15 @@ def cmd_backtest(args):
                 result.export_json(output_path)
                 print(f"\nResults exported to {output_path}")
 
+        # Plot if requested
+        if getattr(args, "plot", None) is not None:
+            from backtesting.plot import plot_backtest
+
+            save_path = args.plot if args.plot else f"tmp/{args.ticker}_backtest.png"
+            show = False
+            plot_backtest(result, save_path=save_path, show=show)
+            sys.exit(0)
+
     except Exception as e:
         print(f"Backtest error: {e}")
         sys.exit(1)
@@ -662,6 +671,14 @@ Examples:
              "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
     )
     backtest_parser.add_argument("--name", default=None, help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')")
+    backtest_parser.add_argument(
+        "--plot",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="Plot signals and equity curve after backtest. Optionally supply a file path "
+             "(PNG/PDF) to save the figure; omit to show interactively.",
+    )
     backtest_parser.set_defaults(func=cmd_backtest)
 
     # portfolio command

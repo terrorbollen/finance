@@ -45,6 +45,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | B7 | Monte Carlo simulation for backtest confidence intervals | `backtesting/metrics.py`, `backtesting/results.py` | — | open |
 | B8 | Calibration staleness warning: warn if calibrator was fitted >N days ago so live signals aren't silently based on stale calibration | `signals/calibration.py`, `main.py` | — | open |
 | B9 | Equity curve CSV export via CLI flag (`--export-equity`): backtester builds equity curves internally but there's no way to get them out | `backtesting/results.py`, `main.py` | — | open |
+| B10 | **Wire per-horizon signals into the backtester (depends on M4).** Currently `backtester.py` takes a single `(signal, confidence, price_change)` tuple from `model.predict()` and copies it to all horizon entries. Once M4 is done, update the backtester to extract the horizon-specific head output for each `HorizonPrediction` instead. This makes per-horizon backtest results reflect genuine per-horizon model quality rather than just holding-period effects. | `backtesting/backtester.py` | — | open |
 
 ### Risk Management (`signals/`)
 
@@ -78,7 +79,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | M1 | Purged cross-validation (gap between train/val folds to prevent leakage) | `models/walk_forward.py` | — | done |
 | M2 | Holdout ticker validation (exclude one ticker from training, test generalisation) | `models/training.py`, `backtesting/backtester.py` | — | done |
 | M3 | Hyperparameter tuning (systematic search) | `models/training.py` | — | open |
-| M4 | Multi-horizon output heads (1-7 day predictions) | `models/signal_model.py`, `models/training.py` | — | open |
+| M4 | **Expose per-horizon signals from multi-horizon heads.** The model already trains one classification head per horizon (`signal_1d` … `signal_7d`), but `SignalModel.predict()` collapses them into a single majority-vote consensus before returning. This means the backtester copies the same signal to every horizon entry, so per-horizon backtests differ only in holding period — not in signal quality. A proper multi-horizon model should return each head's own prediction so that e.g. the 1-day head (trained on short-term momentum) can disagree with the 7-day head (trained on medium-term trend). Change `predict()` to return per-horizon probs/classes and update the backtester (see B10) to consume them. Keep the consensus signal as an optional aggregation for the live `generate` command. | `models/signal_model.py`, `models/training.py` | — | open |
 | M5 | Ensemble models (LSTM + GRU) — average predictions from both architectures | `models/signal_model.py`, `models/training.py` | — | open |
 
 ### Signal Logic (`signals/`)
