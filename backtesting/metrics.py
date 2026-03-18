@@ -466,8 +466,8 @@ class MetricsCalculator:
             y_score = [p.all_probs[idx] for p in preds]  # type: ignore[index]
             try:
                 result[signal] = float(roc_auc_score(y_true, y_score))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: ROC AUC calculation failed for {signal.name}: {e}")
         return result
 
     def _calculate_temporal_accuracy(

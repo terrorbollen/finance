@@ -13,7 +13,6 @@ from backtesting.metrics import MetricsCalculator
 from backtesting.results import HorizonPrediction, Signal
 from signals.direction import Direction
 
-
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_metrics.py style)
 # ---------------------------------------------------------------------------
@@ -304,8 +303,9 @@ class TestFeatureMismatch:
             bt.run("FAKE.ST")
 
     def test_no_raise_when_within_10_percent(self, monkeypatch):
-        import backtesting.backtester as bt_module
         from datetime import date as dt
+
+        import backtesting.backtester as bt_module
 
         feature_columns = [f"f{i}" for i in range(20)]
         # DataFrame has 19 of 20 features + required close/volume cols (5% missing → should not raise)

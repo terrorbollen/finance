@@ -5,7 +5,8 @@ import os
 import numpy as np
 from tensorflow import keras
 
-from models.losses import sparse_focal_loss
+from models.losses import balanced_focal_loss, sparse_focal_loss
+from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 
 
 class SignalModel:
@@ -29,6 +30,7 @@ class SignalModel:
         use_focal_loss: bool = True,
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
+        class_weights: list[float] | None = None,
         prediction_horizons: list[int] | None = None,
     ):
         self.input_dim = input_dim
@@ -38,6 +40,7 @@ class SignalModel:
         self.use_focal_loss = use_focal_loss
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
+        self.class_weights = class_weights
         self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
         self.model: keras.Model | None = None
         self._build_model()
@@ -70,9 +73,17 @@ class SignalModel:
             name="signal_model",
         )
 
-        # Build loss and metric dicts
+        # Build loss and metric dicts.
+        # If class_weights are provided, use balanced_focal_loss which applies
+        # per-class alpha weighting (down-weights the dominant HOLD class).
+        # Falls back to scalar-alpha focal loss when weights aren't available.
         if self.use_focal_loss:
-            signal_loss = sparse_focal_loss(gamma=self.focal_gamma, alpha=self.focal_alpha)
+            if self.class_weights is not None:
+                signal_loss = balanced_focal_loss(
+                    gamma=self.focal_gamma, class_weights=self.class_weights
+                )
+            else:
+                signal_loss = sparse_focal_loss(gamma=self.focal_gamma, alpha=self.focal_alpha)
         else:
             signal_loss = "sparse_categorical_crossentropy"
 
@@ -125,13 +136,13 @@ class SignalModel:
         # With 1 horizon → threshold=1; with 3 → threshold=2; scales automatically.
         n_horizons = len(signal_probs_list)
         majority = n_horizons // 2 + 1
-        signal_class = np.ones(batch_size, dtype=int)  # default HOLD
+        signal_class = np.full(batch_size, HOLD_IDX, dtype=int)  # default HOLD
         for i in range(batch_size):
             v = votes[i]
-            if np.sum(v == 0) >= majority:
-                signal_class[i] = 0  # BUY
-            elif np.sum(v == 2) >= majority:
-                signal_class[i] = 2  # SELL
+            if np.sum(v == BUY_IDX) >= majority:
+                signal_class[i] = BUY_IDX
+            elif np.sum(v == SELL_IDX) >= majority:
+                signal_class[i] = SELL_IDX
 
         return avg_probs, signal_class, price_target.flatten()
 

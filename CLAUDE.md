@@ -6,14 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When running as one of several parallel agents, follow this protocol before doing any work:
 
-1. **Read `AGENTS.md`** — it is the task board and module ownership map. Read `CONTRIBUTIONS.md` for the full coding and workflow guidelines.
-2. **Claim a task** — edit the **Claimed by** cell for your chosen task to your agent name (e.g. `Agent-1`). Pick the highest-priority unclaimed task in a module no other agent currently owns.
-3. **Stay in scope** — only edit files listed in your task's **Scope** column. Do not touch `main.py` or other modules unless your task explicitly lists them.
-4. **Mark done** — update the task **Status** to `done` when finished.
-5. **Release the module** — clear the **Current owner** entry in the Module Ownership Map when done.
+1. **Read `AGENTS.md`** — it is the task board. Read `CONTRIBUTIONS.md` for the full coding and workflow guidelines.
+2. **Check active locks** — run `ls .agent-locks/` to see which tasks are currently claimed.
+3. **Claim a task atomically** — pick the highest-priority `open` task whose lock does not exist, then run:
+   ```bash
+   mkdir .agent-locks/TASK_ID   # e.g. mkdir .agent-locks/B12
+   ```
+   `mkdir` is atomic — if another agent claimed the same task first, this command fails and you pick a different task. Then update **Claimed by** and **Status** in `AGENTS.md`.
+4. **Stay in scope** — only edit files listed in your task's **Scope** column.
+5. **Mark done and release** — set **Status** to `done` and clear **Claimed by** in `AGENTS.md`, then remove the lockfile:
+   ```bash
+   rmdir .agent-locks/TASK_ID
+   ```
 6. **Update CHANGELOG.md** — add an entry describing what changed and why.
-
-> If two agents accidentally pick the same module, the one that claimed it later should back off and choose a different task.
 
 ## Key documents
 

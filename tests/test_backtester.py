@@ -3,11 +3,11 @@
 from datetime import date
 from unittest.mock import MagicMock
 
-import backtesting.backtester as bt_module
 import numpy as np
 import pandas as pd
 import pytest
 
+import backtesting.backtester as bt_module
 from backtesting.backtester import Backtester
 from backtesting.results import DailyPrediction, HorizonPrediction, Signal
 

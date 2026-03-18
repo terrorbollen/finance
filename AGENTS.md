@@ -9,24 +9,24 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 
 ### Before you start
 1. Read this file, `CLAUDE.md`, and `CONTRIBUTIONS.md`.
-2. Pick the **top unclaimed task** in a category whose module no other agent currently owns.
-3. Edit **Claimed by** to your agent name and set **Status** to `in_progress`.
-4. Set yourself as **Current owner** in the Module Ownership Map.
+2. Run `ls .agent-locks/` to see which tasks are currently claimed.
+3. Pick the **top open task** that has no lockfile.
+4. **Claim it atomically:** `mkdir .agent-locks/TASK_ID` — if this fails, someone else just claimed it; pick another task.
+5. Update **Claimed by** and **Status** to `in_progress` in the task table below.
 
 ### While you work
-5. Touch only files listed in your task's **Scope**.
-6. If you notice a bug, design issue, missing test, or potential improvement **outside your current scope**, add it as a new task at the bottom of the relevant section — don't fix it now, just log it with status `open`.
+6. Touch only files listed in your task's **Scope**.
+7. If you notice a bug or improvement **outside your scope**, add it as a new `open` task — don't fix it now.
 
 ### Before you finish
-7. Run `uv run ruff check .` and `uv run mypy .` — both must pass clean.
-8. Run `uv run pytest` — all tests pass.
-9. If your task touches `models/`, `data/features.py`, or `signals/`, run a backtest before and after. See [`STRATEGY.md`](STRATEGY.md) for what makes a result trustworthy.
-10. Mark the task **done**, clear **Claimed by**, and release your module in the ownership map.
-11. Add an entry to `CHANGELOG.md` — what changed and why, not just which files.
+8. Run `uv run ruff check .` and `uv run mypy .` — both must pass clean.
+9. Run `uv run pytest` — all tests pass.
+10. If your task touches `models/`, `data/features.py`, or `signals/`, run a backtest before and after.
+11. Set **Status** to `done` and clear **Claimed by** in the task table.
+12. Release the lock: `rmdir .agent-locks/TASK_ID`
+13. Add an entry to `CHANGELOG.md` — what changed and why, not just which files.
 
-> **Priority:** Tasks are listed top-to-bottom within each section from highest to lowest priority. Always pick the top unclaimed one you can handle.
-
-> **Conflicts:** If two agents accidentally claim the same module, the later one backs off and picks a different task.
+> **Priority:** Tasks are listed top-to-bottom within each section from highest to lowest priority.
 
 ---
 
@@ -133,12 +133,4 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 
 ---
 
-## Module Ownership Map
-
-| Module | Files | Current owner |
-|--------|-------|---------------|
-| `data/` | `data/fetcher.py`, `data/features.py` | Claude |
-| `models/` | `models/signal_model.py`, `models/training.py`, `models/walk_forward.py`, `models/mlflow_tracking.py` | — |
-| `signals/` | `signals/generator.py`, `signals/calibration.py` | Claude |
-| `backtesting/` | `backtesting/backtester.py`, `backtesting/metrics.py`, `backtesting/results.py`, `backtesting/portfolio.py` | Claude |
-| `main.py` | `main.py` | Claude |
+> Active locks: run `ls .agent-locks/` to see which tasks are currently in progress.

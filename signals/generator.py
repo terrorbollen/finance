@@ -11,7 +11,7 @@ from data.fetcher import StockDataFetcher
 from models.config import ModelConfig
 from models.signal_model import SignalModel
 from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
-from signals.direction import Direction
+from signals.direction import IDX_TO_DIRECTION, Direction
 
 
 class Signal(BaseModel):
@@ -292,7 +292,7 @@ class SignalGenerator:
 
         # Extract values
         direction_idx = signal_class[0]
-        direction = [Direction.BUY, Direction.HOLD, Direction.SELL][direction_idx]
+        direction = IDX_TO_DIRECTION[direction_idx]
         raw_confidence = float(signal_probs[0][direction_idx])
         predicted_change = float(price_target[0])
 

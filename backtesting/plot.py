@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 from backtesting.results import BacktestResult
 from signals.direction import Direction as Signal
 
-
 # ── colour / style constants ─────────────────────────────────────────────────
 _BUY_COLOR = "#2ecc71"   # green
 _SELL_COLOR = "#e74c3c"  # red

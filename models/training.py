@@ -20,6 +20,7 @@ from models.mlflow_tracking import (
     training_run,
 )
 from models.signal_model import SignalModel, create_sequences
+from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 
 
 class ModelTrainer:
@@ -127,20 +128,20 @@ class ModelTrainer:
                 min_ret[: n - h] = windows.min(axis=1) / close_vals[: n - h] - 1
 
             # Store labels as columns so dropna() aligns them automatically
-            lbl = np.ones(n, dtype=float)  # HOLD=1 (float to allow NaN passthrough)
+            lbl = np.full(n, float(HOLD_IDX), dtype=float)  # default HOLD (float to allow NaN passthrough)
             lbl[np.isnan(max_ret)] = np.nan
 
             buy_cond = max_ret > buy_thresh
             sell_cond = min_ret < sell_thresh  # sell_thresh is negative
 
             # Non-conflicting cases
-            lbl[buy_cond & ~sell_cond] = 0   # BUY
-            lbl[sell_cond & ~buy_cond] = 2   # SELL
+            lbl[buy_cond & ~sell_cond] = BUY_IDX
+            lbl[sell_cond & ~buy_cond] = SELL_IDX
 
             # Conflict: both thresholds crossed — label by larger magnitude
             conflict = buy_cond & sell_cond & ~np.isnan(max_ret)
-            lbl[conflict & (max_ret >= np.abs(min_ret))] = 0  # upside wins
-            lbl[conflict & (max_ret < np.abs(min_ret))] = 2   # downside wins
+            lbl[conflict & (max_ret >= np.abs(min_ret))] = BUY_IDX   # upside wins
+            lbl[conflict & (max_ret < np.abs(min_ret))] = SELL_IDX   # downside wins
             df_features[f"_label_{h}d"] = lbl
 
         # Drop rows with NaN (TA warmup + last max_horizon rows without future prices)
@@ -251,7 +252,7 @@ class ModelTrainer:
             )
 
         # Print class distribution BEFORE training (use first horizon as representative)
-        label_names = {0: "BUY", 1: "HOLD", 2: "SELL"}
+        label_names = {BUY_IDX: "BUY", HOLD_IDX: "HOLD", SELL_IDX: "SELL"}
         labels_repr = labels_list_combined[0]
         unique, counts = np.unique(labels_repr, return_counts=True)
         total = len(labels_repr)
@@ -264,20 +265,26 @@ class ModelTrainer:
         print("=" * 50 + "\n")
 
         # Normalize features using training data only to avoid look-ahead bias.
-        # Compute the raw-feature index where training ends so we don't include
-        # val/test statistics in the mean/std.
+        # Compute per-ticker training boundaries so that data from a later-dated
+        # ticker doesn't contaminate another ticker's normalization stats (M6 fix).
         print("Normalizing features...")
-        n_sequences = len(features) - self.sequence_length + 1
-        train_end_raw = int(n_sequences * self.train_ratio) + self.sequence_length - 1
-        train_end_raw = min(train_end_raw, len(features))
-        self.feature_mean = np.nanmean(features[:train_end_raw], axis=0)
-        self.feature_std = np.nanstd(features[:train_end_raw], axis=0) + 1e-8
+        training_rows: list[np.ndarray] = []
+        for ticker_feats in all_features:
+            n_t = len(ticker_feats)
+            n_seq_t = n_t - self.sequence_length + 1
+            train_end_t = int(n_seq_t * self.train_ratio) + self.sequence_length - 1
+            train_end_t = min(train_end_t, n_t)
+            training_rows.append(ticker_feats[:train_end_t])
+        training_features = np.vstack(training_rows)
+        self.feature_mean = np.nanmean(training_features, axis=0)
+        self.feature_std = np.nanstd(training_features, axis=0) + 1e-8
         features = (features - self.feature_mean) / self.feature_std
 
         # Replace any remaining inf/nan with 0
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Create sequences
+        n_sequences = len(features) - self.sequence_length + 1
         print(f"Creating sequences (length={self.sequence_length}, ~{n_sequences:,} sequences)...")
         X, y_signal_list, y_price = create_sequences(
             features, labels_list_combined, prices, self.sequence_length
@@ -324,10 +331,15 @@ class ModelTrainer:
 
         def _do_training():
             """Inner function to run training (optionally wrapped in MLflow context)."""
+            # Pass class weights to the model so balanced_focal_loss can apply
+            # per-class alpha weighting (down-weights the dominant HOLD class).
+            # Only meaningful when focal loss is active.
+            cw = [float(class_weight_dict[i]) for i in range(3)] if use_focal_loss else None
             self.model = SignalModel(
                 input_dim=input_dim,
                 sequence_length=self.sequence_length,
                 use_focal_loss=use_focal_loss,
+                class_weights=cw,
                 prediction_horizons=self.prediction_horizons,
             )
 
@@ -349,11 +361,11 @@ class ModelTrainer:
             ]
 
             # Build named output dicts for multi-horizon training
-            y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train)}
+            y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train, strict=True)}
             y_train_dict["price_target"] = y_price_train
-            y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val)}
+            y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val, strict=True)}
             y_val_dict["price_target"] = y_price_val
-            y_test_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_test)}
+            y_test_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_test, strict=True)}
             y_test_dict["price_target"] = y_price_test
 
             fit_kwargs: dict = {

@@ -26,3 +26,7 @@ htmlcov/
 
 # ruff
 .ruff_cache/
+
+# Agent coordination lockfiles (runtime state, not source)
+.agent-locks/*
+!.agent-locks/.gitkeep
