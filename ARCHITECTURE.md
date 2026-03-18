@@ -93,9 +93,9 @@ This JSON is the contract between training and inference. It is written by `Mode
 
 Converts the normalized feature matrix into overlapping windows:
 - Input: `features[n_rows, n_features]`
-- Output: `X[n_samples, sequence_length, n_features]`, `y_signal[n_samples]`, `y_price[n_samples]`
+- Output: `X[n_samples, sequence_length, n_features]`, `y_signals[n_horizons, n_samples]`, `y_price[n_samples]`
 
-Labels are computed by looking `prediction_horizon` days forward. The last `prediction_horizon` rows have no label and are excluded.
+Labels are computed by looking forward `h` days for each horizon `h` in `prediction_horizons`. The last `max(prediction_horizons)` rows have no label and are excluded.
 
 **Data is never shuffled.** Temporal ordering is preserved throughout.
 

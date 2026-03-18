@@ -129,7 +129,7 @@ The calibrator is loaded automatically from `checkpoints/calibration.json`.
 
 Recalibrate whenever you retrain the model. Calibration runs automatically at the end of `train` unless `--no-calibrate` is passed.
 
-**Horizon must match training prediction_horizon.** The calibration `--horizon` parameter is the number of *bars* ahead to evaluate. The default is 5 (5 trading days), matching the model's default `prediction_horizon`. Only override this if you changed `prediction_horizon` during training.
+**Horizon must match one of the model's training prediction_horizons.** The calibration `--horizon` parameter is the number of *bars* ahead to evaluate. The default is 5 (5 trading days), matching the shortest horizon in the model's default `prediction_horizons` (`[5, 10, 20]`). Only override this if you changed `prediction_horizons` during training.
 
 ---
 

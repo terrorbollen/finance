@@ -89,7 +89,7 @@ class WalkForwardTrainer:
         validation_days: int = 60,
         step_days: int = 60,
         sequence_length: int = 20,
-        prediction_horizon: int = 5,
+        prediction_horizons: list[int] | None = None,
         buy_threshold: float = 0.015,
         sell_threshold: float = -0.015,
         purge_gap: int | None = None,
@@ -103,12 +103,13 @@ class WalkForwardTrainer:
             validation_days: Size of validation window (~3 months)
             step_days: How many days to step forward each iteration
             sequence_length: LSTM sequence length
-            prediction_horizon: Days ahead to predict
+            prediction_horizons: Days ahead to predict (default [5, 10, 20]).
+                                 Must match the horizons used in standard training.
             buy_threshold: Price change threshold for BUY label
             sell_threshold: Price change threshold for SELL label
             purge_gap: Bars to skip between end of training and start of validation to
                 prevent label leakage from overlapping sequences.  Defaults to
-                ``prediction_horizon`` (typically 5).
+                ``max(prediction_horizons)`` (longest horizon label look-ahead).
             embargo_gap: Bars to skip at the very start of each new training window
                 where sequences would overlap with the previous validation period
                 (combinatorial purged CV embargo concept).  Defaults to
@@ -118,44 +119,55 @@ class WalkForwardTrainer:
         self.validation_days = validation_days
         self.step_days = step_days
         self.sequence_length = sequence_length
-        self.prediction_horizon = prediction_horizon
+        self.prediction_horizons = prediction_horizons if prediction_horizons is not None else [5, 10, 20]
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
-        # Default purge_gap to prediction_horizon; embargo_gap to sequence_length
-        self.purge_gap: int = prediction_horizon if purge_gap is None else purge_gap
+        # Default purge_gap to longest horizon; embargo_gap to sequence_length
+        self.purge_gap: int = max(self.prediction_horizons) if purge_gap is None else purge_gap
         self.embargo_gap: int = sequence_length if embargo_gap is None else embargo_gap
 
         self.feature_columns: list[str] = []
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
 
-    def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Prepare features and labels from raw price data."""
+    def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+        """Prepare features and labels from raw price data.
+
+        Returns:
+            Tuple of (features, labels_list, price_changes) where labels_list
+            contains one label array per horizon in self.prediction_horizons.
+        """
         engineer = FeatureEngineer(df)
         df_features = engineer.add_all_features()
 
         self.feature_columns = engineer.get_feature_columns()
 
-        # Calculate future returns
-        df_features["future_return"] = (
-            df_features["close"].shift(-self.prediction_horizon) / df_features["close"] - 1
-        )
+        # Create labels for each prediction horizon
+        for h in self.prediction_horizons:
+            future_ret = df_features["close"].shift(-h) / df_features["close"] - 1
+            df_features[f"_future_return_{h}d"] = future_ret
+            lbl = pd.Series(1, index=df_features.index, dtype=float)  # Hold
+            lbl[future_ret.isna()] = float("nan")
+            lbl[future_ret > self.buy_threshold] = 0   # Buy
+            lbl[future_ret < self.sell_threshold] = 2  # Sell
+            df_features[f"_label_{h}d"] = lbl
 
-        # Create labels
-        df_features["label"] = 1  # Default: Hold
-        df_features.loc[df_features["future_return"] > self.buy_threshold, "label"] = 0
-        df_features.loc[df_features["future_return"] < self.sell_threshold, "label"] = 2
+        # Price target regression uses the middle horizon
+        mid_h = self.prediction_horizons[len(self.prediction_horizons) // 2]
+        df_features["_future_return"] = df_features[f"_future_return_{mid_h}d"]
 
         df_features = df_features.dropna()
 
         features = df_features[self.feature_columns].values
-        labels = df_features["label"].to_numpy().astype(int)
-        price_changes = df_features["future_return"].to_numpy() * 100
+        labels_list: list[np.ndarray] = [
+            df_features[f"_label_{h}d"].to_numpy().astype(int)
+            for h in self.prediction_horizons
+        ]
+        price_changes = df_features["_future_return"].to_numpy() * 100
 
-        # Handle inf/nan
         features = np.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0)
 
-        return features, labels, price_changes
+        return features, labels_list, price_changes
 
     def generate_windows(self, n_samples: int) -> list[tuple[int, int, int, int]]:
         """
@@ -215,7 +227,7 @@ class WalkForwardTrainer:
     def train_window(
         self,
         X: np.ndarray,
-        y_signal: np.ndarray,
+        y_signal_list: list[np.ndarray],
         y_price: np.ndarray,
         train_start: int,
         train_end: int,
@@ -229,7 +241,7 @@ class WalkForwardTrainer:
 
         Args:
             X: Full sequence array
-            y_signal: Full signal labels
+            y_signal_list: List of signal label arrays, one per horizon
             y_price: Full price changes
             train_start, train_end: Training window indices
             val_start, val_end: Validation window indices
@@ -237,23 +249,30 @@ class WalkForwardTrainer:
             batch_size: Batch size
 
         Returns:
-            Tuple of (trained model, validation metrics)
+            Tuple of (trained model, validation metrics dict)
         """
         X_train = X[train_start:train_end]
-        y_signal_train = y_signal[train_start:train_end]
+        y_signal_train = [ys[train_start:train_end] for ys in y_signal_list]
         y_price_train = y_price[train_start:train_end]
 
         X_val = X[val_start:val_end]
-        y_signal_val = y_signal[val_start:val_end]
+        y_signal_val = [ys[val_start:val_end] for ys in y_signal_list]
         y_price_val = y_price[val_start:val_end]
 
-        # Build model (with focal loss)
+        # Build model matching the prediction_horizons used during data preparation
         input_dim = X.shape[2]
         model = SignalModel(
             input_dim=input_dim,
             sequence_length=self.sequence_length,
             use_focal_loss=True,
+            prediction_horizons=self.prediction_horizons,
         )
+
+        # Build named output dicts to match Keras model output names
+        y_train_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_train, strict=False)}
+        y_train_dict["price_target"] = y_price_train
+        y_val_dict = {f"signal_{h}d": ys for h, ys in zip(self.prediction_horizons, y_signal_val, strict=False)}
+        y_val_dict["price_target"] = y_price_val
 
         # Callbacks
         callbacks = [
@@ -266,21 +285,19 @@ class WalkForwardTrainer:
         ]
 
         assert model.model is not None
-        # Train
         model.model.fit(
             X_train,
-            [y_signal_train, y_price_train],
-            validation_data=(X_val, [y_signal_val, y_price_val]),
+            y_train_dict,
+            validation_data=(X_val, y_val_dict),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callbacks,
             verbose=0,
         )
 
-        # Evaluate
         val_results = cast(
             dict[str, float],
-            model.model.evaluate(X_val, [y_signal_val, y_price_val], verbose=0, return_dict=True),
+            model.model.evaluate(X_val, y_val_dict, verbose=0, return_dict=True),
         )
 
         return model, val_results
@@ -314,14 +331,16 @@ class WalkForwardTrainer:
             setup_mlflow()
         # Fetch and combine data
         fetcher = StockDataFetcher(period="5y")
-        all_features, all_labels, all_prices = [], [], []
+        all_features: list[np.ndarray] = []
+        all_labels: list[list[np.ndarray]] = []  # [ticker][horizon_idx] -> array
+        all_prices: list[np.ndarray] = []
 
         for ticker in tickers:
             try:
                 df = fetcher.fetch(ticker)
-                features, labels, prices = self.prepare_data(df)
+                features, labels_list, prices = self.prepare_data(df)
                 all_features.append(features)
-                all_labels.append(labels)
+                all_labels.append(labels_list)
                 all_prices.append(prices)
                 if verbose:
                     print(f"Loaded {len(features)} samples from {ticker}")
@@ -331,28 +350,42 @@ class WalkForwardTrainer:
         if not all_features:
             raise ValueError("No data loaded")
 
-        # Combine and normalize
+        # Combine data across tickers
         features = np.vstack(all_features)
-        labels = np.concatenate(all_labels)
+        # Concatenate each horizon's labels separately across tickers
+        labels_list_combined: list[np.ndarray] = [
+            np.concatenate([t[i] for t in all_labels])
+            for i in range(len(self.prediction_horizons))
+        ]
         prices = np.concatenate(all_prices)
 
-        self.feature_mean = np.nanmean(features, axis=0)
-        self.feature_std = np.nanstd(features, axis=0) + 1e-8
+        # Normalize using only the first training window to avoid look-ahead bias.
+        # Using the full dataset for normalization would leak validation/test statistics
+        # into the training normalization constants for every fold.
+        train_end_raw = min(self.initial_train_days, len(features))
+        self.feature_mean = np.nanmean(features[:train_end_raw], axis=0)
+        self.feature_std = np.nanstd(features[:train_end_raw], axis=0) + 1e-8
         features = (features - self.feature_mean) / self.feature_std
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Create sequences
-        X, y_signal, y_price = create_sequences(features, labels, prices, self.sequence_length)
+        # Create sequences — pass list of label arrays (one per horizon)
+        X, y_signal_list, y_price = create_sequences(
+            features, labels_list_combined, prices, self.sequence_length
+        )
 
         if verbose:
             print(f"\nTotal sequences: {len(X)}")
-            unique, counts = np.unique(y_signal, return_counts=True)
-            print(f"Class distribution: {dict(zip(unique, counts, strict=False))}")
+            unique, counts = np.unique(y_signal_list[0], return_counts=True)
+            print(f"Class distribution (first horizon): {dict(zip(unique, counts, strict=False))}")
 
         # Generate windows
         windows = self.generate_windows(len(X))
         if verbose:
             print(f"Generated {len(windows)} walk-forward windows\n")
+
+        # Canonical accuracy key: first horizon
+        first_h = self.prediction_horizons[0]
+        acc_key = f"signal_{first_h}d_accuracy"
 
         def _run_walk_forward():
             """Inner function to run walk-forward training."""
@@ -391,7 +424,7 @@ class WalkForwardTrainer:
 
                         model, val_metrics = self.train_window(
                             X,
-                            y_signal,
+                            y_signal_list,
                             y_price,
                             train_start,
                             train_end,
@@ -403,14 +436,14 @@ class WalkForwardTrainer:
 
                         log_metrics(
                             {
-                                "val_accuracy": val_metrics["signal_accuracy"],
+                                "val_accuracy": val_metrics.get(acc_key, float("nan")),
                                 "val_loss": val_metrics["loss"],
                             }
                         )
                 else:
                     model, val_metrics = self.train_window(
                         X,
-                        y_signal,
+                        y_signal_list,
                         y_price,
                         train_start,
                         train_end,
@@ -420,11 +453,12 @@ class WalkForwardTrainer:
                         batch_size=batch_size,
                     )
 
-                # Get class distribution in validation set
-                val_labels = y_signal[val_start:val_end]
+                # Get class distribution in validation set (first horizon)
+                val_labels = y_signal_list[0][val_start:val_end]
                 unique, counts = np.unique(val_labels, return_counts=True)
                 class_dist = {int(k): int(v) for k, v in zip(unique, counts, strict=False)}
 
+                val_acc = val_metrics.get(acc_key, float("nan"))
                 window_result = WindowResult(
                     window_id=i + 1,
                     train_start_idx=train_start,
@@ -433,14 +467,14 @@ class WalkForwardTrainer:
                     val_end_idx=val_end,
                     train_samples=train_end - train_start,
                     val_samples=val_end - val_start,
-                    val_accuracy=val_metrics["signal_accuracy"],
+                    val_accuracy=val_acc,
                     val_loss=val_metrics["loss"],
                     class_distribution=class_dist,
                 )
                 results.append(window_result)
 
                 if verbose:
-                    print(f"  Validation accuracy: {window_result.val_accuracy:.4f}")
+                    print(f"  Validation accuracy ({first_h}d): {window_result.val_accuracy:.4f}")
 
                 # Keep best model
                 if window_result.val_accuracy > best_accuracy:
@@ -467,7 +501,7 @@ class WalkForwardTrainer:
                         "validation_days": self.validation_days,
                         "step_days": self.step_days,
                         "sequence_length": self.sequence_length,
-                        "prediction_horizon": self.prediction_horizon,
+                        "prediction_horizons": str(self.prediction_horizons),
                         "buy_threshold": self.buy_threshold,
                         "sell_threshold": self.sell_threshold,
                         "purge_gap": self.purge_gap,
@@ -495,6 +529,7 @@ class WalkForwardTrainer:
                         "feature_std": self.feature_std.tolist(),
                         "sequence_length": self.sequence_length,
                         "input_dim": X.shape[2],
+                        "prediction_horizons": self.prediction_horizons,
                         "walk_forward": True,
                         "num_windows": len(windows),
                     }
@@ -534,6 +569,7 @@ class WalkForwardTrainer:
                     "feature_std": self.feature_std.tolist(),
                     "sequence_length": self.sequence_length,
                     "input_dim": X.shape[2],
+                    "prediction_horizons": self.prediction_horizons,
                     "walk_forward": True,
                     "num_windows": len(windows),
                 }

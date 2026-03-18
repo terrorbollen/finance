@@ -19,7 +19,7 @@ def _trainer(
         initial_train_days=initial_train_days,
         validation_days=validation_days,
         sequence_length=20,
-        prediction_horizon=5,
+        prediction_horizons=[5],
         purge_gap=purge_gap,
         embargo_gap=embargo_gap,
     )
@@ -121,13 +121,13 @@ class TestPurgeGap:
             overlap = train_indices & val_indices
             assert not overlap, f"Unexpected overlap between train and val: {overlap}"
 
-    def test_default_purge_gap_equals_prediction_horizon(self) -> None:
-        prediction_horizon = 5
-        t = WalkForwardTrainer(prediction_horizon=prediction_horizon)
-        assert t.purge_gap == prediction_horizon
+    def test_default_purge_gap_equals_max_prediction_horizon(self) -> None:
+        # purge_gap defaults to max(prediction_horizons) to cover the longest label look-ahead
+        t = WalkForwardTrainer(prediction_horizons=[5, 10, 20])
+        assert t.purge_gap == 20
 
     def test_explicit_purge_gap_overrides_default(self) -> None:
-        t = WalkForwardTrainer(prediction_horizon=5, purge_gap=10)
+        t = WalkForwardTrainer(prediction_horizons=[5, 10, 20], purge_gap=10)
         assert t.purge_gap == 10
 
 

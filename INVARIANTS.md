@@ -66,11 +66,11 @@ Rules that must always hold. Violating any of these will silently degrade the sy
 
 **Why:** Calibration maps raw softmax probabilities to real accuracy rates observed in backtest data. After retraining the model, the probability distribution changes and the old calibrator no longer reflects reality.
 
-## Calibration horizon must match the model's training prediction_horizon
+## Calibration horizon must match one of the model's training prediction_horizons
 
-**Rule:** The default calibration horizon is 5 bars (5 trading days), matching the model's `prediction_horizon`. Only override `--horizon` if you intentionally changed `prediction_horizon` during training.
+**Rule:** The default calibration horizon is 5 bars (5 trading days), matching the shortest horizon in the model's `prediction_horizons` (default `[5, 10, 20]`). Only override `--horizon` if you intentionally changed `prediction_horizons` during training.
 
-**Why:** The `--horizon` in calibration is a number of *bars*. If it doesn't match what the model was trained to predict, the calibration is evaluated on the wrong outcome window and the calibration file is useless for live trading.
+**Why:** The `--horizon` in calibration is a number of *bars*. If it doesn't match one of the horizons the model was trained to predict, the calibration is evaluated on the wrong outcome window and the calibration file is useless for live trading.
 
 ---
 
