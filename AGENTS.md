@@ -42,7 +42,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | B4 | Add slippage modeling (volume-based) | `backtesting/backtester.py` | — | done |
 | B5 | Add benchmark comparison (index vs strategy) | `backtesting/results.py`, `backtesting/backtester.py` | — | done |
 | B6 | Walk-forward backtest: retrain model on expanding window during backtest | `backtesting/backtester.py`, `models/walk_forward.py` | — | done |
-| B7 | Monte Carlo simulation for backtest confidence intervals | `backtesting/metrics.py`, `backtesting/results.py` | — | open |
+| B7 | Monte Carlo simulation for backtest confidence intervals | `backtesting/metrics.py`, `backtesting/results.py` | — | done |
 | B8 | Calibration staleness warning: warn if calibrator was fitted >N days ago so live signals aren't silently based on stale calibration | `signals/calibration.py`, `main.py` | — | open |
 | B9 | Equity curve CSV export via CLI flag (`--export-equity`): backtester builds equity curves internally but there's no way to get them out | `backtesting/results.py`, `main.py` | — | open |
 | B10 | **Wire per-horizon signals into the backtester (depends on M4).** Currently `backtester.py` takes a single `(signal, confidence, price_change)` tuple from `model.predict()` and copies it to all horizon entries. Once M4 is done, update the backtester to extract the horizon-specific head output for each `HorizonPrediction` instead. This makes per-horizon backtest results reflect genuine per-horizon model quality rather than just holding-period effects. | `backtesting/backtester.py` | — | open |
@@ -61,7 +61,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 | R4 | Confidence threshold filtering (only trade above X%) | `signals/generator.py` | — | done |
 | R5 | Per-direction calibration (separate BUY/SELL/HOLD calibrators) | `signals/calibration.py`, `signals/generator.py` | — | done |
 | R6 | Portfolio-level risk limits (max drawdown cap, max position count) | `signals/generator.py` | — | done |
-| R7 | Expose directional calibration in `calibrate` CLI command (currently only fits the global calibrator) | `main.py` | — | open |
+| R7 | Expose directional calibration in `calibrate` CLI command (currently only fits the global calibrator) | `main.py` | — | done |
 | R8 | Add `get_calibration_table()` equivalent to `DirectionalCalibrator` for diagnostic display | `signals/calibration.py` | — | open |
 
 ### Feature Engineering (`data/`)

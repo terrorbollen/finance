@@ -8,6 +8,56 @@ from signals.direction import Direction as Signal
 
 
 @dataclass
+class MonteCarloResult:
+    """Monte Carlo simulation results for a single horizon's trade sequence.
+
+    Produced by randomly shuffling the realized trade returns N times and
+    computing full-path metrics (total return, max drawdown, Sharpe) for each
+    permutation.  This reveals whether the observed backtest result is a
+    genuine edge or just a lucky ordering of the same trades.
+    """
+
+    n_simulations: int
+
+    # Total return distribution
+    mean_total_return: float
+    std_total_return: float
+    p5_total_return: float
+    p95_total_return: float
+    # Percentile rank of the observed result (0–100). >50 means the strategy
+    # outperformed the average random ordering.
+    observed_total_return_pct: float
+
+    # Max drawdown distribution (values are negative percentages)
+    mean_max_drawdown: float
+    p5_max_drawdown: float
+    p95_max_drawdown: float
+
+    # Sharpe ratio distribution
+    mean_sharpe: float
+    p5_sharpe: float
+    p95_sharpe: float
+    observed_sharpe_pct: float
+
+    def to_dict(self) -> dict:
+        return {
+            "n_simulations": self.n_simulations,
+            "mean_total_return": round(self.mean_total_return, 4),
+            "std_total_return": round(self.std_total_return, 4),
+            "p5_total_return": round(self.p5_total_return, 4),
+            "p95_total_return": round(self.p95_total_return, 4),
+            "observed_total_return_pct": round(self.observed_total_return_pct, 1),
+            "mean_max_drawdown": round(self.mean_max_drawdown, 4),
+            "p5_max_drawdown": round(self.p5_max_drawdown, 4),
+            "p95_max_drawdown": round(self.p95_max_drawdown, 4),
+            "mean_sharpe": round(self.mean_sharpe, 4),
+            "p5_sharpe": round(self.p5_sharpe, 4),
+            "p95_sharpe": round(self.p95_sharpe, 4),
+            "observed_sharpe_pct": round(self.observed_sharpe_pct, 1),
+        }
+
+
+@dataclass
 class HorizonPrediction:
     """Single horizon prediction made on a specific date."""
 
@@ -166,6 +216,9 @@ class HorizonMetrics:
     # Benjamini-Hochberg FDR-corrected p-value (set by BacktestResult after all horizons computed)
     bh_corrected_pvalue: float = 1.0
 
+    # Monte Carlo simulation over trade-return permutations (None when trade_count < 5)
+    monte_carlo: MonteCarloResult | None = None
+
     def to_dict(self) -> dict:
         return {
             "horizon_days": self.horizon_days,
@@ -196,6 +249,7 @@ class HorizonMetrics:
             "regime_metrics": self.regime_metrics,
             "trades": [t.to_dict() for t in self.trades],
             "bh_corrected_pvalue": self.bh_corrected_pvalue,
+            "monte_carlo": self.monte_carlo.to_dict() if self.monte_carlo is not None else None,
         }
 
 
@@ -322,6 +376,34 @@ class BacktestResult:
             bh_str = f"{m.bh_corrected_pvalue:.3f}"
             regime_str = ", ".join(f"{k}:{v['n_trades']}t" for k, v in m.regime_metrics.items()) if m.regime_metrics else "N/A (no ADX)"
             lines.append(f"{horizon}-day{'':<5} {m.brier_score:.3f}   {m.ece:.3f}   {win_ci:<20} {sharpe_ci:<20} {bh_str:<10} {regime_str}")
+        lines.extend(["", "MONTE CARLO SIMULATION (trade-order permutations)"])
+        lines.append("-" * 80)
+        lines.append(
+            "Shuffles realized trade returns 1 000 times to test path-dependency."
+        )
+        lines.append(
+            "Observed pct = where your result ranks vs random orderings (>50 is above average)."
+        )
+        lines.append(
+            f"{'Horizon':<10} {'MC Return mean [p5,p95]':<30} {'Obs pct':<10} {'MC Sharpe mean [p5,p95]':<30} {'Obs pct'}"
+        )
+        lines.append("-" * 80)
+        for horizon in sorted(self.horizon_metrics.keys()):
+            m = self.horizon_metrics[horizon]
+            if m.monte_carlo is None:
+                lines.append(f"{horizon}-day{'':<5} N/A (fewer than 5 trades)")
+                continue
+            mc = m.monte_carlo
+            ret_str = (
+                f"{mc.mean_total_return:+.1f}% [{mc.p5_total_return:+.1f}%, {mc.p95_total_return:+.1f}%]"
+            )
+            sharpe_str = (
+                f"{mc.mean_sharpe:.2f} [{mc.p5_sharpe:.2f}, {mc.p95_sharpe:.2f}]"
+            )
+            lines.append(
+                f"{horizon}-day{'':<5} {ret_str:<30} {mc.observed_total_return_pct:.0f}%{'':<5} "
+                f"{sharpe_str:<30} {mc.observed_sharpe_pct:.0f}%"
+            )
         lines.append("=" * 80)
 
         return "\n".join(lines)

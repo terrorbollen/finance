@@ -12,6 +12,7 @@ from backtesting.results import (
     ClassMetrics,
     HorizonMetrics,
     HorizonPrediction,
+    MonteCarloResult,
     Signal,
     TradeRecord,
 )
@@ -135,6 +136,14 @@ class MetricsCalculator:
         metrics.roc_auc = self._calculate_roc_auc(completed)
         metrics.temporal_accuracy = self._calculate_temporal_accuracy(completed)
         metrics.regime_metrics = self._calculate_regime_metrics(completed)
+
+        # Monte Carlo simulation over trade-return permutations
+        net_returns = [t.net_pct for t in trading["trades"]]
+        metrics.monte_carlo = self._run_monte_carlo(
+            net_returns=net_returns,
+            observed_total_return=trading["net_total_return"],
+            observed_sharpe=trading["sharpe_ratio"],
+        )
 
         return metrics
 
@@ -543,6 +552,75 @@ class MetricsCalculator:
         calmar = total_return / abs(max_dd) if abs(max_dd) > 1e-8 else 0.0
 
         return sharpe, sortino, max_dd, calmar
+
+    def _run_monte_carlo(
+        self,
+        net_returns: list[float],
+        observed_total_return: float,
+        observed_sharpe: float,
+        n_simulations: int = 1000,
+    ) -> MonteCarloResult | None:
+        """
+        Monte Carlo simulation by random permutation of realized trade returns.
+
+        Shuffles the trade return sequence ``n_simulations`` times and computes
+        total return, max drawdown, and Sharpe ratio for each permutation.
+        The observed result's percentile rank reveals whether the backtest
+        outcome depends on the lucky ordering of trades.
+
+        Returns None when fewer than 5 trades are available.
+        """
+        if len(net_returns) < 5:
+            return None
+
+        rng = np.random.default_rng(42)
+        arr = np.array(net_returns, dtype=float)
+        n = len(arr)
+
+        sim_total_returns: list[float] = []
+        sim_max_drawdowns: list[float] = []
+        sim_sharpes: list[float] = []
+
+        for _ in range(n_simulations):
+            shuffled = arr[rng.permutation(n)]
+
+            # Total return
+            sim_total_returns.append(float(np.sum(shuffled)))
+
+            # Max drawdown
+            cum = np.cumsum(shuffled)
+            running_max = np.maximum.accumulate(cum)
+            sim_max_drawdowns.append(float(np.min(cum - running_max)))
+
+            # Sharpe ratio (annualised, per-trade)
+            mean_r = float(np.mean(shuffled))
+            std_r = float(np.std(shuffled, ddof=1))
+            sharpe = float((mean_r / std_r) * np.sqrt(252)) if std_r > 1e-8 else 0.0
+            sim_sharpes.append(sharpe)
+
+        ret_arr = np.array(sim_total_returns)
+        dd_arr = np.array(sim_max_drawdowns)
+        sharpe_arr = np.array(sim_sharpes)
+
+        # Percentile rank of the observed value vs simulations (0–100)
+        obs_ret_pct = float(np.mean(ret_arr <= observed_total_return) * 100)
+        obs_sharpe_pct = float(np.mean(sharpe_arr <= observed_sharpe) * 100)
+
+        return MonteCarloResult(
+            n_simulations=n_simulations,
+            mean_total_return=float(np.mean(ret_arr)),
+            std_total_return=float(np.std(ret_arr, ddof=1)),
+            p5_total_return=float(np.percentile(ret_arr, 5)),
+            p95_total_return=float(np.percentile(ret_arr, 95)),
+            observed_total_return_pct=obs_ret_pct,
+            mean_max_drawdown=float(np.mean(dd_arr)),
+            p5_max_drawdown=float(np.percentile(dd_arr, 5)),
+            p95_max_drawdown=float(np.percentile(dd_arr, 95)),
+            mean_sharpe=float(np.mean(sharpe_arr)),
+            p5_sharpe=float(np.percentile(sharpe_arr, 5)),
+            p95_sharpe=float(np.percentile(sharpe_arr, 95)),
+            observed_sharpe_pct=obs_sharpe_pct,
+        )
 
     def determine_actual_signal(self, price_change: float) -> Signal:
         """

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from backtesting import Backtester, PortfolioBacktester
 from backtesting.results import HorizonMetrics, Signal
 from data.fetcher import StockDataFetcher
+from models.config import ModelConfig
 from models.mlflow_tracking import (
     get_recent_runs,
     log_hyperparameters,
@@ -15,10 +16,9 @@ from models.mlflow_tracking import (
     setup_mlflow,
     training_run,
 )
-from models.config import ModelConfig
 from models.training import ModelTrainer
 from models.walk_forward import WalkForwardTrainer
-from signals.calibration import ConfidenceCalibrator
+from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
 from signals.generator import SignalGenerator
 
 
@@ -143,6 +143,7 @@ def cmd_train(args):
                     output_path=paths["calibration"],
                     mlflow_run_id=results.get("mlflow_run_id"),
                     model_name=getattr(args, "name", None),
+                    directional_output_path=paths["calibration_directional"],
                 )
     except Exception as e:
         print(f"Training error: {e}")
@@ -407,6 +408,7 @@ def _run_calibration(
     num_buckets: int = 10,
     mlflow_run_id: str | None = None,
     model_name: str | None = None,
+    directional_output_path: str | None = None,
 ) -> bool:
     """
     Run backtests on tickers and fit a confidence calibrator.
@@ -428,6 +430,8 @@ def _run_calibration(
     all_confidences = []
     all_correct = []
     ticker_metrics: dict[str, HorizonMetrics] = {}
+    direction_confidences: dict[str, list[float]] = {"BUY": [], "SELL": [], "HOLD": []}
+    direction_correct: dict[str, list[bool]] = {"BUY": [], "SELL": [], "HOLD": []}
 
     cal_paths = ModelConfig.checkpoint_paths(model_name)
     backtester = Backtester(model_path=cal_paths["weights"])
@@ -446,6 +450,10 @@ def _run_calibration(
                     all_confidences.append(pred.confidence)
                     all_correct.append(pred.is_correct)
                     collected += 1
+                    direction = pred.predicted_signal.name  # "BUY", "SELL", or "HOLD"
+                    if direction in direction_confidences:
+                        direction_confidences[direction].append(pred.confidence)
+                        direction_correct[direction].append(pred.is_correct)
             m = result.horizon_metrics.get(horizon)
             if m:
                 ticker_metrics[ticker] = m
@@ -471,6 +479,30 @@ def _run_calibration(
     print("\n" + calibrator.get_calibration_table())
     calibrator.save(output_path)
     print(f"  Calibration saved to {output_path}")
+
+    # Fit and save directional calibrator if a path was provided
+    if directional_output_path:
+        dir_cal = DirectionalCalibrator(num_buckets=num_buckets)
+        fitted_directions = []
+        for direction in DirectionalCalibrator.DIRECTIONS:
+            confs = direction_confidences[direction]
+            corr = direction_correct[direction]
+            if len(confs) >= num_buckets:
+                dir_cal.fit(direction, np.array(confs), np.array(corr))
+                fitted_directions.append(direction)
+        if dir_cal.is_fitted:
+            print("\nDirectional Calibration Tables:")
+            for direction in fitted_directions:
+                print(f"\n  {direction}:")
+                for line in dir_cal.calibrators[direction].get_calibration_table().splitlines():
+                    print(f"  {line}")
+            skipped = [d for d in DirectionalCalibrator.DIRECTIONS if d not in fitted_directions]
+            if skipped:
+                print(f"  (Skipped {', '.join(skipped)} — insufficient samples)")
+            dir_cal.save(directional_output_path)
+            print(f"\n  Directional calibration saved to {directional_output_path}")
+        else:
+            print("\n  Warning: Not enough per-direction samples for directional calibration.")
 
     if mlflow_run_id:
         # Log calibration as its own run tagged with the training run_id.
@@ -505,7 +537,9 @@ def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
     name = getattr(args, "name", None)
     tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
-    output_path = args.output or ModelConfig.checkpoint_paths(name)["calibration"]
+    paths = ModelConfig.checkpoint_paths(name)
+    output_path = args.output or paths["calibration"]
+    directional_output_path = paths["calibration_directional"]
     horizon = args.horizon if args.horizon is not None else 5
 
     ok = _run_calibration(
@@ -514,6 +548,7 @@ def cmd_calibrate(args):
         output_path=output_path,
         num_buckets=args.buckets,
         model_name=name,
+        directional_output_path=directional_output_path,
     )
     if not ok:
         sys.exit(1)

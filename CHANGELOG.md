@@ -4,6 +4,22 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18 (session 11)
+
+### Directional calibration exposed in `calibrate` CLI command (R7)
+
+`_run_calibration()` in `main.py` now collects per-direction prediction data (BUY/SELL/HOLD) alongside the existing global data in the same backtest loop. After fitting and saving the global `ConfidenceCalibrator`, it fits a `DirectionalCalibrator` — one separate isotonic calibrator per direction — and saves it to `checkpoints/calibration_directional.json` (the path already reserved in `ModelConfig.checkpoint_paths()`). Per-direction calibration tables are printed to the console. The directional path is passed automatically from `cmd_calibrate` and from the post-training auto-calibration in `cmd_train`, so both `calibrate` and `train` now produce both files without any extra flags required.
+
+---
+
+## 2026-03-18 (session 10)
+
+### Monte Carlo simulation for backtest confidence intervals (B7)
+
+Added `MonteCarloResult` dataclass (`backtesting/results.py`) and `_run_monte_carlo()` method (`backtesting/metrics.py`). After every backtest, the realized per-trade net returns are randomly permuted 1 000 times. For each permutation, total return, max drawdown, and Sharpe are computed. Results include mean, std, 5th/95th percentiles, and the observed result's percentile rank vs simulations. This answers the key question: is the strategy's good result genuine edge, or just lucky ordering of the same trades? If the observed total return is in the 95th percentile of shuffled paths, the result is robust to path order; if it's near the median, the outcome was heavily path-dependent. Attached to `HorizonMetrics.monte_carlo`, displayed in `BacktestResult.summary()`, and included in JSON export.
+
+---
+
 ## 2026-03-18 (session 9)
 
 ### Walk-forward backtest — periodic in-production retraining (B6)
