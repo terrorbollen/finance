@@ -277,6 +277,10 @@ class TestFeatureMismatch:
             np.full(len(X), 2.0),
         )
         bt.metrics_calculator = MetricsCalculator()
+        bt.prediction_horizons = None
+        bt.retrain_every = None
+        bt.retrain_epochs = 20
+        bt.enforce_position_cooldown = False
         return bt
 
     def test_raises_when_over_10_percent_missing(self, monkeypatch):

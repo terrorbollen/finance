@@ -53,6 +53,8 @@ class Backtester:
         slippage_factor: float = 0.1,
         leverage: float = 1.0,
         enforce_position_cooldown: bool = False,
+        retrain_every: int | None = None,
+        retrain_epochs: int = 20,
     ):
         """
         Initialize the backtester.
@@ -72,6 +74,12 @@ class Backtester:
             leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
             enforce_position_cooldown: If True, after a non-HOLD trade skip the next
                                        horizon predictions to avoid overlapping positions.
+            retrain_every: If set, retrain the model every N trading days during the
+                           backtest using all data available up to that point. Simulates
+                           periodic retraining in production. None disables retraining
+                           (default: use the initial model for the entire period).
+            retrain_epochs: Number of training epochs per retrain (default 20).
+                            Fewer than standard training for speed.
         """
         self.model_path = model_path or ModelConfig.checkpoint_paths()["weights"]
         self.sequence_length = sequence_length
@@ -80,6 +88,8 @@ class Backtester:
         self.strict_holdout = strict_holdout
         self.slippage_factor = slippage_factor
         self.enforce_position_cooldown = enforce_position_cooldown
+        self.retrain_every = retrain_every
+        self.retrain_epochs = retrain_epochs
 
         self.model: SignalModel | None = None
         self.feature_columns: list[str] | None = None
@@ -230,23 +240,65 @@ class Backtester:
         if horizons is None:
             horizons = [1, 2, 3, 4, 5, 6, 7]
 
-        # Build all sequences in one batch and run a single model.predict call.
-        feature_array = df[feature_cols].values
-        if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
-            feature_array_norm = (feature_array - self.feature_mean) / self.feature_std
-        else:
-            mean = feature_array.mean(axis=0)
-            std = feature_array.std(axis=0) + 1e-8
-            feature_array_norm = (feature_array - mean) / std
+        df_index = pd.DatetimeIndex(df.index)
 
-        X_all = np.stack([
-            feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
-            for idx in backtest_indices
-        ])  # shape (N, sequence_length, n_features)
+        # Build sequences and run predictions.  When retrain_every is set the
+        # backtest indices are split into chunks; the model is retrained at the
+        # start of each chunk (except the first) using all data up to that date.
+        feature_array = df[feature_cols].values
+
+        def _normalize(arr: np.ndarray) -> np.ndarray:
+            if self.feature_mean is not None and len(self.feature_mean) == len(feature_cols):
+                return (arr - self.feature_mean) / self.feature_std  # type: ignore[operator]
+            mean = arr.mean(axis=0)
+            std = arr.std(axis=0) + 1e-8
+            return (arr - mean) / std
 
         if self.model is None:
             raise RuntimeError("Model not initialized — call _load_model() first")
-        signal_probs_all, signal_classes_all, price_targets_all = self.model.predict(X_all)
+
+        if self.retrain_every is None:
+            # Fast path: single batch over the full period.
+            feature_array_norm = _normalize(feature_array)
+            X_all = np.stack([
+                feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
+                for idx in backtest_indices
+            ])
+            signal_probs_all, signal_classes_all, price_targets_all = self.model.predict(X_all)
+        else:
+            # Chunked path: retrain at the boundary of every chunk.
+            n = self.retrain_every
+            chunks = [backtest_indices[i : i + n] for i in range(0, len(backtest_indices), n)]
+            all_probs_parts: list[np.ndarray] = []
+            all_classes_parts: list[np.ndarray] = []
+            all_prices_parts: list[np.ndarray] = []
+
+            for chunk_idx, chunk in enumerate(chunks):
+                if chunk_idx > 0:
+                    cutoff = df_index[chunk[0]].date()
+                    print(
+                        f"\nRetraining model at {cutoff} "
+                        f"(chunk {chunk_idx + 1}/{len(chunks)})...",
+                        flush=True,
+                    )
+                    self._retrain_model(df_raw, ref_data, cutoff)
+
+                # Recompute normalised features with current stats after any retrain.
+                feature_array_norm = _normalize(feature_array)
+                X_chunk = np.stack([
+                    feature_array_norm[idx - self.sequence_length + 1 : idx + 1]
+                    for idx in chunk
+                ])
+                if self.model is None:
+                    raise RuntimeError("Model lost after retrain")
+                probs, classes, prices = self.model.predict(X_chunk)
+                all_probs_parts.append(probs)
+                all_classes_parts.append(classes)
+                all_prices_parts.append(prices)
+
+            signal_probs_all = np.vstack(all_probs_parts)
+            signal_classes_all = np.concatenate(all_classes_parts)
+            price_targets_all = np.concatenate(all_prices_parts)
 
         # Precompute relative volumes for all indices
         rel_vols: np.ndarray | None = None
@@ -263,7 +315,6 @@ class Backtester:
 
         # Process each day using pre-computed predictions
         daily_predictions = []
-        df_index = pd.DatetimeIndex(df.index)
         for i, idx in enumerate(backtest_indices):
             pred_date = df_index[idx].date()
             current_price = float(df["close"].iloc[idx])
@@ -321,7 +372,7 @@ class Backtester:
         sorted_horizons = sorted(horizon_metrics.keys())
         raw_pvalues = [horizon_metrics[h].win_rate_pvalue for h in sorted_horizons]
         corrected = _bh_correction(raw_pvalues)
-        for h, bh_pval in zip(sorted_horizons, corrected):
+        for h, bh_pval in zip(sorted_horizons, corrected, strict=False):
             horizon_metrics[h].bh_corrected_pvalue = bh_pval
 
         return BacktestResult(
@@ -335,6 +386,90 @@ class Backtester:
             daily_predictions=daily_predictions,
             horizon_metrics=horizon_metrics,
         )
+
+    def _retrain_model(
+        self,
+        df_raw: pd.DataFrame,
+        ref_data: dict[str, pd.DataFrame],
+        cutoff_date: date,
+    ) -> None:
+        """Retrain the model on all raw data strictly before cutoff_date.
+
+        Updates self.model, self.feature_mean, self.feature_std, and
+        self.feature_columns in-place.  Normalization stats are computed
+        from the filtered training data only — no look-ahead.
+
+        Args:
+            df_raw: Full raw OHLCV DataFrame for the ticker.
+            ref_data: Cross-asset reference data (OMXS30, FX rates, etc.).
+            cutoff_date: Only rows strictly before this date are used.
+        """
+        from tensorflow import keras  # noqa: PLC0415
+
+        from models.signal_model import create_sequences  # noqa: PLC0415
+        from models.walk_forward import WalkForwardTrainer  # noqa: PLC0415
+
+        mask = pd.DatetimeIndex(df_raw.index).date < cutoff_date
+        df_cut = df_raw[mask]
+
+        min_rows = self.sequence_length + max(self.prediction_horizons or [20]) + 50
+        if len(df_cut) < min_rows:
+            print(f"  Skipping retrain: only {len(df_cut)} rows before {cutoff_date} (need {min_rows})")
+            return
+
+        horizons = self.prediction_horizons or [5, 10, 20]
+        wf = WalkForwardTrainer(
+            sequence_length=self.sequence_length,
+            prediction_horizons=horizons,
+            buy_threshold=self.buy_threshold,
+            sell_threshold=self.sell_threshold,
+        )
+
+        features, labels_list, price_changes = wf.prepare_data(df_cut, reference_data=ref_data)
+
+        # Normalize using this window's data only (invariant: no look-ahead)
+        feature_mean = np.nanmean(features, axis=0)
+        feature_std = np.nanstd(features, axis=0) + 1e-8
+        features_norm = (features - feature_mean) / feature_std
+        features_norm = np.nan_to_num(features_norm, nan=0.0, posinf=0.0, neginf=0.0)
+
+        X, y_signal_list, y_price = create_sequences(
+            features_norm, labels_list, price_changes, self.sequence_length
+        )
+
+        if len(X) < 50:
+            print(f"  Skipping retrain: only {len(X)} sequences (need 50)")
+            return
+
+        input_dim = X.shape[2]
+        model = SignalModel(
+            input_dim=input_dim,
+            sequence_length=self.sequence_length,
+            prediction_horizons=horizons,
+            use_focal_loss=True,
+        )
+
+        y_dict: dict[str, np.ndarray] = {
+            f"signal_{h}d": ys for h, ys in zip(horizons, y_signal_list, strict=False)
+        }
+        y_dict["price_target"] = y_price
+
+        assert model.model is not None
+        model.model.fit(  # type: ignore[call-arg]
+            X,
+            y_dict,
+            epochs=self.retrain_epochs,
+            batch_size=32,
+            callbacks=[keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True)],
+            verbose=0,
+        )
+
+        self.model = model
+        self.feature_columns = wf.feature_columns
+        self.feature_mean = feature_mean
+        self.feature_std = feature_std
+        self.input_dim = input_dim
+        print(f"  Retrain complete — {len(X)} sequences, input_dim={input_dim}", flush=True)
 
     def _compute_benchmark_return(
         self,

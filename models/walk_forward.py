@@ -130,14 +130,23 @@ class WalkForwardTrainer:
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
 
-    def prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+    def prepare_data(
+        self,
+        df: pd.DataFrame,
+        reference_data: dict[str, "pd.DataFrame"] | None = None,
+    ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
         """Prepare features and labels from raw price data.
+
+        Args:
+            df: Raw OHLCV DataFrame for one ticker.
+            reference_data: Optional cross-asset data passed to FeatureEngineer
+                (OMXS30, USD/SEK, EUR/SEK). If None, cross-asset features are omitted.
 
         Returns:
             Tuple of (features, labels_list, price_changes) where labels_list
             contains one label array per horizon in self.prediction_horizons.
         """
-        engineer = FeatureEngineer(df)
+        engineer = FeatureEngineer(df, reference_data=reference_data)
         df_features = engineer.add_all_features()
 
         self.feature_columns = engineer.get_feature_columns()

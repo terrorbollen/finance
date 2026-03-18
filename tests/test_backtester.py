@@ -63,6 +63,10 @@ def _backtester_with_mock_model(
     bt.feature_mean = None
     bt.feature_std = None
     bt.input_dim = None
+    bt.prediction_horizons = None
+    bt.retrain_every = None
+    bt.retrain_epochs = 20
+    bt.enforce_position_cooldown = False
     bt.model = _mock_model(signal_idx)
 
     from backtesting.metrics import MetricsCalculator
@@ -291,3 +295,89 @@ class TestPredictForDate:
 
         # rolling avg of first 20 rows is 1000, today is 2000 → ratio ≈ 2.0
         assert pred.relative_volume == pytest.approx(2.0, rel=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward retraining — mocks _retrain_model so no training occurs
+# ---------------------------------------------------------------------------
+
+
+class TestWalkForwardRetrain:
+    """Tests the chunked prediction / retraining coordination in Backtester.run().
+
+    _retrain_model is mocked to a no-op so these tests run in milliseconds.
+    What is verified: when retraining fires, how many times, at what dates,
+    and that the prediction count is always correct.
+    """
+
+    def _bt(self, retrain_every: int) -> Backtester:
+        bt = _backtester_with_mock_model(sequence_length=5)
+        bt.retrain_every = retrain_every
+        return bt
+
+    def _patch_retrain(self, monkeypatch, bt: Backtester) -> list:
+        """Replace _retrain_model with a recorder that returns immediately."""
+        calls: list = []
+        monkeypatch.setattr(bt, "_retrain_model", lambda df_raw, ref_data, d: calls.append(d))
+        return calls
+
+    def test_no_retrain_when_disabled(self, monkeypatch):
+        """retrain_every=None → _retrain_model is never called."""
+        bt = _backtester_with_mock_model(sequence_length=5)
+        bt.retrain_every = None
+        calls = self._patch_retrain(monkeypatch, bt)
+
+        df = _make_df(n_rows=80)
+        _patch_fetcher(monkeypatch, df)
+        bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+
+        assert calls == []
+
+    def test_retrain_count_matches_chunk_boundaries(self, monkeypatch):
+        """Number of retrains equals number of chunks minus one (first chunk never retrains)."""
+        retrain_every = 20
+        bt = self._bt(retrain_every)
+        calls = self._patch_retrain(monkeypatch, bt)
+
+        df = _make_df(n_rows=80)
+        _patch_fetcher(monkeypatch, df)
+        result = bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+
+        n_days = result.trading_days
+        expected_retrains = (n_days - 1) // retrain_every  # chunks - 1
+        assert len(calls) == expected_retrains
+
+    def test_retrain_cutoff_dates_are_strictly_increasing(self, monkeypatch):
+        """Each retrain uses a later cutoff date than the previous one."""
+        bt = self._bt(retrain_every=15)
+        calls = self._patch_retrain(monkeypatch, bt)
+
+        df = _make_df(n_rows=80)
+        _patch_fetcher(monkeypatch, df)
+        bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+
+        assert len(calls) >= 2, "Need at least 2 retrains to test ordering"
+        assert calls == sorted(calls)
+        assert len(set(calls)) == len(calls)  # all unique
+
+    def test_prediction_count_equals_trading_days(self, monkeypatch):
+        """Total daily predictions equal trading_days regardless of chunk size."""
+        bt = self._bt(retrain_every=10)
+        self._patch_retrain(monkeypatch, bt)
+
+        df = _make_df(n_rows=80)
+        _patch_fetcher(monkeypatch, df)
+        result = bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+
+        assert len(result.daily_predictions) == result.trading_days
+
+    def test_single_chunk_triggers_no_retrain(self, monkeypatch):
+        """When retrain_every >= trading_days, only one chunk exists → no retrains."""
+        bt = self._bt(retrain_every=1000)
+        calls = self._patch_retrain(monkeypatch, bt)
+
+        df = _make_df(n_rows=80)
+        _patch_fetcher(monkeypatch, df)
+        bt.run("FAKE.ST", start_date=date(2023, 1, 2), end_date=date(2023, 3, 31))
+
+        assert calls == []

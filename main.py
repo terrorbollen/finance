@@ -231,6 +231,8 @@ def cmd_backtest(args):
         strict_holdout=not args.no_strict_holdout,
         leverage=args.leverage,
         enforce_position_cooldown=args.position_cooldown,
+        retrain_every=getattr(args, "retrain_every", None),
+        retrain_epochs=getattr(args, "retrain_epochs", 20),
     )
     try:
         result = backtester.run(
@@ -669,6 +671,23 @@ Examples:
         dest="position_cooldown",
         help="Enforce non-overlapping positions: after a trade, skip the next N days "
              "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
+    )
+    backtest_parser.add_argument(
+        "--retrain-every",
+        type=int,
+        default=None,
+        dest="retrain_every",
+        metavar="N",
+        help="Retrain the model every N trading days during the backtest using all data "
+             "available up to that point. Simulates periodic retraining in production. "
+             "Omit to use a single static model for the full period.",
+    )
+    backtest_parser.add_argument(
+        "--retrain-epochs",
+        type=int,
+        default=20,
+        dest="retrain_epochs",
+        help="Epochs per retrain when --retrain-every is set (default: 20).",
     )
     backtest_parser.add_argument("--name", default=None, help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')")
     backtest_parser.add_argument(

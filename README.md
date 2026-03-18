@@ -70,8 +70,17 @@ uv run python main.py backtest VOLV-B.ST
 uv run python main.py backtest VOLV-B.ST --horizons 1 3 5
 uv run python main.py backtest VOLV-B.ST --start-date 2024-01-01 --end-date 2024-12-31
 uv run python main.py backtest VOLV-B.ST --output results.csv
-uv run python main.py backtest VOLV-B.ST --no-mlflow    # Skip MLflow logging
+uv run python main.py backtest VOLV-B.ST --no-mlflow              # Skip MLflow logging
+uv run python main.py backtest VOLV-B.ST --leverage 2.0           # 2x leverage
+uv run python main.py backtest VOLV-B.ST --position-cooldown      # No overlapping positions
+uv run python main.py backtest VOLV-B.ST --name production        # Use named model checkpoint
+
+# Periodic retraining during the backtest (simulates production retraining cadence)
+uv run python main.py backtest VOLV-B.ST --retrain-every 60       # Retrain every 60 trading days
+uv run python main.py backtest VOLV-B.ST --retrain-every 30 --retrain-epochs 30
 ```
+
+`--retrain-every N` splits the backtest into chunks of N trading days. At each boundary the model is retrained on all data available up to that date, then predictions resume with the updated model. This simulates the realistic scenario of periodic retraining in production. Without this flag, the same initial model is used for the entire period.
 
 ### `calibrate [tickers...]`
 Fit a confidence calibrator from backtest data so raw model probabilities map to real accuracy rates.

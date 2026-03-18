@@ -4,6 +4,16 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-18 (session 9)
+
+### Walk-forward backtest — periodic in-production retraining (B6)
+
+Added `retrain_every: int | None` and `retrain_epochs: int` to `Backtester`. When `retrain_every=N`, the backtest splits into chunks of N trading days; at each chunk boundary the model is retrained from scratch on all raw data strictly before that date, then predictions resume with the updated model and normalization stats. This simulates the realistic production scenario where you periodically retrain rather than running the same model indefinitely. `retrain_every=None` (default) preserves the original single-model behaviour. Exposed as `--retrain-every N` and `--retrain-epochs N` on the `backtest` CLI command.
+
+Also added `reference_data` parameter to `WalkForwardTrainer.prepare_data()` so retrain calls include cross-asset features (OMXS30, FX rates), matching what the standard training pipeline produces.
+
+---
+
 ## 2026-03-18 (session 8)
 
 ### Backtest plot (`backtesting/plot.py`)
