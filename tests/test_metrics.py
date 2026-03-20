@@ -2,6 +2,7 @@
 
 import math
 from datetime import date
+from typing import Any
 
 import numpy as np
 import pytest
@@ -35,8 +36,8 @@ def _pred(
     return p
 
 
-def _calc(**kwargs) -> MetricsCalculator:
-    defaults = {
+def _calc(**kwargs: Any) -> MetricsCalculator:
+    defaults: dict[str, Any] = {
         "buy_threshold": 0.02,
         "sell_threshold": -0.02,
         "commission_pct": 0.0,

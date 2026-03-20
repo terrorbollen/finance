@@ -143,7 +143,7 @@ class Backtester:
         )
         try:
             self.model.load(self.model_path)
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError) as e:
             print(f"Warning: Could not load model weights: {e}")
             print("Using untrained model (predictions will be random)")
         # Warm up: run one dummy prediction to trigger TF graph compilation now,
@@ -245,7 +245,7 @@ class Backtester:
         )
 
         if horizons is None:
-            horizons = [1, 2, 3, 4, 5, 6, 7]
+            horizons = self.prediction_horizons or [5, 10, 20]
 
         df_index = pd.DatetimeIndex(df.index)
 
@@ -510,7 +510,7 @@ class Backtester:
             first = float(df_period["close"].iloc[0])
             last = float(df_period["close"].iloc[-1])
             return ((last / first) - 1) * 100
-        except Exception as e:
+        except (ValueError, KeyError, IndexError, OSError) as e:
             print(f"Warning: Could not compute OMXS30 benchmark return: {e}")
             return None
 
@@ -572,7 +572,8 @@ class Backtester:
                 today_vol = float(vol_series.iloc[-1])
                 if rolling_avg > 0:
                     relative_volume = today_vol / float(rolling_avg)
-            except Exception:
+            except (IndexError, ValueError, TypeError) as e:
+                print(f"Warning: Could not compute relative volume at index {idx}: {e}")
                 relative_volume = None
 
         return HorizonPrediction(

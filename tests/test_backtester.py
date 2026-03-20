@@ -52,7 +52,6 @@ def _backtester_with_mock_model(
 ) -> Backtester:
     """Return a Backtester with no real model/config loaded."""
     bt = Backtester.__new__(Backtester)
-    bt.interval = "1d"
     bt.model_path = "nonexistent.weights.h5"
     bt.sequence_length = sequence_length
     bt.buy_threshold = 0.02

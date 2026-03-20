@@ -3,6 +3,7 @@ Signal/Direction enum unification, and equity curve correctness."""
 
 import math
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -39,8 +40,8 @@ def _pred(
     return p
 
 
-def _calc(**kwargs) -> MetricsCalculator:
-    defaults = {
+def _calc(**kwargs: Any) -> MetricsCalculator:
+    defaults: dict[str, Any] = {
         "buy_threshold": 0.02,
         "sell_threshold": -0.02,
         "commission_pct": 0.0,

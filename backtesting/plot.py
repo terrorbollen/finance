@@ -12,8 +12,7 @@ import matplotlib.ticker as mticker
 if TYPE_CHECKING:
     from datetime import date
 
-from backtesting.results import BacktestResult
-from signals.direction import Direction as Signal
+from backtesting.results import BacktestResult, Signal
 
 # ── colour / style constants ─────────────────────────────────────────────────
 _BUY_COLOR = "#2ecc71"  # green
@@ -177,11 +176,11 @@ def plot_backtest(
             continue
         eq_dates = [d for d, _ in m.equity_curve]
         eq_values = [v for _, v in m.equity_curve]
-        color = _EQUITY_COLORS[idx % len(_EQUITY_COLORS)]
+        eq_color = _EQUITY_COLORS[idx % len(_EQUITY_COLORS)]
         ax_equity.plot(
             eq_dates,
             eq_values,
-            color=color,
+            color=eq_color,
             linewidth=1.4,
             label=f"{h}-day (net {m.net_total_return:+.1f}%)",
         )

@@ -4,6 +4,21 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-03-20
+
+### B16 — Narrow bare `except Exception` blocks in backtester.py
+
+Three `except Exception` catch-all blocks in `backtesting/backtester.py` were replaced with specific exception types: model weight loading now catches `(FileNotFoundError, OSError, ValueError)`, benchmark computation catches `(ValueError, KeyError, IndexError, OSError)`, and the relative-volume calculation catches `(IndexError, ValueError, TypeError)`. The relative-volume handler was also missing any log output — a genuine bug (e.g. an unexpected dtype causing a `TypeError`) would silently produce `None` with no trace; it now prints a warning with the exception message. Narrowing these handlers means unexpected exceptions (shape mismatches, programming errors) propagate normally and are visible in tracebacks.
+
+### B15 — Remove cross-module import from `backtesting/plot.py`
+`plot.py` was importing `Direction` directly from `signals.direction`, violating the INVARIANTS.md rule that `backtesting/` and `signals/` must not import from each other. Since `backtesting/results.py` already re-exports `Signal` (aliased from `Direction`), the fix was a one-line change: import `Signal` from `backtesting.results` instead. Also opened B18 to address the same underlying violation in `results.py` itself.
+
+### B17 — Fix default backtest horizons to match model's trained horizons
+
+The backtester defaulted to `horizons = [1, 2, 3, 4, 5, 6, 7]` when no horizons were passed. A model trained on `[5, 10, 20]` would then generate `HorizonPrediction` rows for horizons it was never trained to predict (1–4, 6–7), making those rows in every backtest report meaningless noise. Fixed by changing the default to `self.prediction_horizons or [5, 10, 20]`, so the backtester always analyses the exact horizons the loaded model was trained on. Per-horizon metrics in the report now genuinely reflect per-horizon model quality.
+
+---
+
 ## 2026-03-18
 
 ### Add macro indicators: oil prices and interest rates (F5)

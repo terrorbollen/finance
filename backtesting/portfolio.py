@@ -306,19 +306,19 @@ class PortfolioBacktester:
             for tkr in to_close:
                 _, _, entry_val, trade = open_pos.pop(tkr)
                 pred = pred_by_ticker[tkr].get(trade.open_date)
-                price_return = (
+                horizon_return: float | None = (
                     (pred.actual_price_change / 100.0)
                     if (pred is not None and pred.actual_price_change is not None)
                     else None
                 )
-                trade.actual_return = price_return
+                trade.actual_return = horizon_return
                 eff_lev = trade.effective_leverage
                 direction = -1.0 if trade.is_short else 1.0
                 commission = entry_val * self.commission_pct * 2 * eff_lev
                 trade.commission_paid = commission
-                if price_return is not None:
+                if horizon_return is not None:
                     capital += (
-                        entry_val + entry_val * price_return * direction * eff_lev - commission
+                        entry_val + entry_val * horizon_return * direction * eff_lev - commission
                     )
                 else:
                     capital += entry_val  # return capital as-is for incomplete predictions
@@ -403,8 +403,8 @@ class PortfolioBacktester:
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text())
-            return data.get("buckets", [])
+            data: dict = json.loads(path.read_text())
+            return list(data.get("buckets", []))
         except Exception:
             return []
 
@@ -412,7 +412,7 @@ class PortfolioBacktester:
         """Map raw softmax confidence to calibrated probability via bucket lookup."""
         for b in self._cal_buckets:
             if b["raw_min"] <= raw_confidence <= b["raw_max"]:
-                return b["calibrated"]
+                return float(b["calibrated"])
         return raw_confidence  # fallback: return raw if no bucket matches
 
     def _kelly_fraction(self, confidence: float, predicted_change_pct: float) -> float:
@@ -435,4 +435,4 @@ class PortfolioBacktester:
 
     @staticmethod
     def _portfolio_value(cash: float, open_pos: dict) -> float:
-        return cash + sum(entry_val for _, (_, _, entry_val, _) in open_pos.items())
+        return cash + float(sum(entry_val for _, (_, _, entry_val, _) in open_pos.items()))
