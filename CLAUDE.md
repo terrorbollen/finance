@@ -6,15 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When running as one of several parallel agents, follow this protocol before doing any work:
 
-1. **Read `AGENTS.md`** — it is the task board. Read `CONTRIBUTIONS.md` for the full coding and workflow guidelines.
+1. **Read `TASKS.md`** — it is the task board. Read `CONTRIBUTIONS.md` for the full coding and workflow guidelines.
 2. **Check active locks** — run `ls .agent-locks/` to see which tasks are currently claimed.
 3. **Claim a task atomically** — pick the highest-priority `open` task whose lock does not exist, then run:
    ```bash
    mkdir .agent-locks/TASK_ID   # e.g. mkdir .agent-locks/B12
    ```
-   `mkdir` is atomic — if another agent claimed the same task first, this command fails and you pick a different task. Then update **Claimed by** and **Status** in `AGENTS.md`.
+   `mkdir` is atomic — if another agent claimed the same task first, this command fails and you pick a different task. Then update **Claimed by** and **Status** in `TASKS.md`.
 4. **Stay in scope** — only edit files listed in your task's **Scope** column.
-5. **Mark done and release** — set **Status** to `done` and clear **Claimed by** in `AGENTS.md`, then remove the lockfile:
+5. **Mark done and release** — set **Status** to `done` and clear **Claimed by** in `TASKS.md`, then remove the lockfile:
    ```bash
    rmdir .agent-locks/TASK_ID
    ```
@@ -24,7 +24,7 @@ When running as one of several parallel agents, follow this protocol before doin
 
 | Document | Purpose |
 |---|---|
-| [`AGENTS.md`](AGENTS.md) | Task board and module ownership map |
+| [`TASKS.md`](TASKS.md) | Task board and module ownership map |
 | [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md) | Full coding standards, testing rules, workflow |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Data flow, stage-by-stage details, module dependency graph |
 | [`INVARIANTS.md`](INVARIANTS.md) | Rules that must always hold — read before touching the pipeline |

@@ -188,7 +188,7 @@ New `plot_backtest()` function renders a two-panel figure after any backtest run
 
 ### Multi-horizon signal design finding documented
 
-Discovered that `SignalModel.predict()` collapses all per-horizon heads into a single majority-vote consensus before returning, so the backtester assigns identical signals to every horizon entry. The different equity curves per horizon are purely a holding-period effect, not evidence of different per-horizon signal quality. Documented as tasks M4 and B10 in `AGENTS.md` — fixing this requires exposing raw per-horizon outputs from the model before the backtester can make genuine per-horizon comparisons.
+Discovered that `SignalModel.predict()` collapses all per-horizon heads into a single majority-vote consensus before returning, so the backtester assigns identical signals to every horizon entry. The different equity curves per horizon are purely a holding-period effect, not evidence of different per-horizon signal quality. Documented as tasks M4 and B10 in `TASKS.md` — fixing this requires exposing raw per-horizon outputs from the model before the backtester can make genuine per-horizon comparisons.
 
 ### Backtest validation diagnostics
 
@@ -384,9 +384,9 @@ Added three deliverables to improve agent orientation in the codebase:
 
 ### Cross-reference audit (markdown files)
 Fixed four gaps in how the project's markdown files referenced each other:
-- AGENTS.md now links to CONTRIBUTIONS.md and STRATEGY.md at the top, and its finish protocol includes pytest, backtest validation, and CHANGELOG steps.
+- TASKS.md now links to CONTRIBUTIONS.md and STRATEGY.md at the top, and its finish protocol includes pytest, backtest validation, and CHANGELOG steps.
 - CLAUDE.md's duplicated backtest output guide (copy of STRATEGY.md) replaced with a single pointer — one source of truth.
-- README.md Contributing section now references both AGENTS.md and CONTRIBUTIONS.md.
+- README.md Contributing section now references both TASKS.md and CONTRIBUTIONS.md.
 - CLAUDE.md key-documents table added so agents see the full map in one place.
 
 ## 2026-03-14

@@ -214,11 +214,11 @@ finance/
 
 ## Contributing / Adding Tasks
 
-Work on this project is coordinated through [`AGENTS.md`](AGENTS.md) (task board and module ownership) and [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md) (coding standards, testing rules, and the full workflow). Before modifying the pipeline, read [`ARCHITECTURE.md`](ARCHITECTURE.md) for data flow and [`INVARIANTS.md`](INVARIANTS.md) for rules that must not be broken.
+Work on this project is coordinated through [`TASKS.md`](TASKS.md) (task board and module ownership) and [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md) (coding standards, testing rules, and the full workflow). Before modifying the pipeline, read [`ARCHITECTURE.md`](ARCHITECTURE.md) for data flow and [`INVARIANTS.md`](INVARIANTS.md) for rules that must not be broken.
 
-**If you're working on a task and notice something worth fixing or adding** — a bug, a missing guard, a potential improvement — add it as a new row in the relevant section of `AGENTS.md` with status `open` before moving on. Don't fix it inline; keep your scope focused and let the board track it.
+**If you're working on a task and notice something worth fixing or adding** — a bug, a missing guard, a potential improvement — add it as a new row in the relevant section of `TASKS.md` with status `open` before moving on. Don't fix it inline; keep your scope focused and let the board track it.
 
-**If you want to pick up a task**, read `AGENTS.md` and `CONTRIBUTIONS.md` first, claim the top unclaimed item in a module no one else owns, and follow the protocol there.
+**If you want to pick up a task**, read `TASKS.md` and `CONTRIBUTIONS.md` first, claim the top unclaimed item in a module no one else owns, and follow the protocol there.
 
 ---
 

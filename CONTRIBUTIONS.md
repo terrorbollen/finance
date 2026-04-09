@@ -6,13 +6,13 @@ This project prioritises reliability over sophistication. Before adding anything
 
 ## Before you start
 
-1. Read `CLAUDE.md` and `AGENTS.md`.
-2. If you're working alongside other agents, claim a task in `AGENTS.md` before touching any files.
+1. Read `CLAUDE.md` and `TASKS.md`.
+2. If you're working alongside other agents, claim a task in `TASKS.md` before touching any files.
 3. Understand the existing code in the module you're changing before modifying it.
 
 ## Picking up a task
 
-- Tasks are tracked in `AGENTS.md`, ordered by priority within each section.
+- Tasks are tracked in `TASKS.md`, ordered by priority within each section.
 - Pick the top unclaimed task in a module no one else currently owns.
 - Claim it by setting **Claimed by** to your name and **Status** to `in_progress`.
 
@@ -20,7 +20,7 @@ This project prioritises reliability over sophistication. Before adding anything
 
 - Only touch files listed in your task's **Scope** column.
 - Do not refactor, rename, or "improve" code outside your scope, even if it looks like it needs it.
-- If you spot a bug or improvement outside your scope, add it as a new row in `AGENTS.md` with status `open` and move on.
+- If you spot a bug or improvement outside your scope, add it as a new row in `TASKS.md` with status `open` and move on.
 
 ## Coding standards
 
@@ -62,5 +62,5 @@ A change is worth keeping if **Sharpe and NetRet both improve**. Accuracy alone 
 
 1. Run `ruff` and `mypy` — both clean.
 2. Run `pytest` — all tests pass.
-3. Mark the task **done** in `AGENTS.md`, clear **Claimed by**, and release your module in the ownership map.
+3. Mark the task **done** in `TASKS.md`, clear **Claimed by**, and release your module in the ownership map.
 4. Add an entry to `CHANGELOG.md` — what changed and why, not just which files.
