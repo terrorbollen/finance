@@ -31,6 +31,19 @@ When running as one of several parallel agents, follow this protocol before doin
 | [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) | Holdout discipline, output interpretation, horizon guide |
 | [`CHANGELOG.md`](CHANGELOG.md) | History of completed changes |
 
+## Available skills
+
+Use these skills (slash commands) at the appropriate points in your workflow. They are wired into `/task` automatically, but can also be run standalone.
+
+| Skill | When to use |
+|---|---|
+| `/task` | Pick up and complete the next open task from `TASKS.md` |
+| `/health-check` | **Before starting any session.** Validates config, calibrator, feature alignment, locks, MLflow |
+| `/backtest-compare` | **After any change to `models/`, `data/features.py`, or `signals/`.** Before/after comparison table |
+| `/explain-signal` | When you want to understand why a signal was generated for a ticker |
+| `/add-task` | When you spot a bug or improvement outside your current scope |
+| `/review-project` | Full quality audit: ML correctness, invariants, test coverage, code structure |
+
 ## Philosophy
 
 We are building a finance tool that generates **reliable, actionable trading signals** for Swedish stocks. The goal is not to build an impressive ML system — it is to make good decisions in the market consistently over time.

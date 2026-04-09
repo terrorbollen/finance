@@ -2,7 +2,9 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from models.training import ModelTrainer
 from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 
 # ---------------------------------------------------------------------------
@@ -124,3 +126,81 @@ class TestLabelCreation:
         # Window [120, 95]: max=120 → +20%, min=95 → -5%.  Both thresholds crossed.
         # |20%| > |5%| → BUY.
         assert lbl[0] == BUY_IDX, f"Conflict row should resolve to BUY, got {lbl[0]}"
+
+
+# ---------------------------------------------------------------------------
+# M8 — feature-dimension consistency check
+# ---------------------------------------------------------------------------
+
+
+class TestFeatureDimensionCheck:
+    """M8 — train() must catch feature-column mismatches before np.vstack."""
+
+    def test_mismatched_feature_dims_raises_with_ticker_name(self):
+        """
+        When the second ticker's prepare_data() returns a different column count,
+        train() should raise ValueError immediately and name the offending ticker.
+        """
+        from unittest.mock import MagicMock, patch
+
+        trainer = ModelTrainer(sequence_length=5)
+        call_count = 0
+
+        def fake_prepare_data(df, reference_data=None):
+            nonlocal call_count
+            call_count += 1
+            n = 100
+            n_features = 10 if call_count == 1 else 8  # mismatch on second call
+            features = np.ones((n, n_features))
+            labels = [np.zeros(n, dtype=int)] * len(trainer.prediction_horizons)
+            prices = np.zeros(n)
+            dates = pd.date_range("2020-01-02", periods=n, freq="B")
+            return features, labels, prices, dates
+
+        fake_df = _make_ohlcv([100.0] * 200)
+
+        with (
+            patch.object(trainer, "prepare_data", side_effect=fake_prepare_data),
+            patch("models.training.StockDataFetcher") as mock_fetcher_cls,
+        ):
+            mock_fetcher = MagicMock()
+            mock_fetcher.fetch.return_value = fake_df
+            mock_fetcher.fetch_cross_asset_data.return_value = {}
+            mock_fetcher_cls.return_value = mock_fetcher
+
+            with pytest.raises(ValueError, match="BAD-TICKER"):
+                trainer.train(["GOOD-TICKER", "BAD-TICKER"], track_with_mlflow=False)
+
+    def test_matching_feature_dims_does_not_raise(self):
+        """When all tickers return the same column count, no error is raised at the check."""
+        from unittest.mock import MagicMock, patch
+
+        trainer = ModelTrainer(sequence_length=5)
+
+        def fake_prepare_data(df, reference_data=None):
+            n = 100
+            features = np.ones((n, 10))
+            labels = [np.zeros(n, dtype=int)] * len(trainer.prediction_horizons)
+            prices = np.zeros(n)
+            dates = pd.date_range("2020-01-02", periods=n, freq="B")
+            return features, labels, prices, dates
+
+        fake_df = _make_ohlcv([100.0] * 200)
+
+        with (
+            patch.object(trainer, "prepare_data", side_effect=fake_prepare_data),
+            patch("models.training.StockDataFetcher") as mock_fetcher_cls,
+        ):
+            mock_fetcher = MagicMock()
+            mock_fetcher.fetch.return_value = fake_df
+            mock_fetcher.fetch_cross_asset_data.return_value = {}
+            mock_fetcher_cls.return_value = mock_fetcher
+
+            # The dimension check passes; a subsequent error (e.g. model build)
+            # is fine — we just confirm ValueError from the dimension check is NOT raised.
+            try:
+                trainer.train(["T1", "T2"], track_with_mlflow=False)
+            except ValueError as exc:
+                assert "feature dimension mismatch" not in str(exc).lower(), (
+                    f"Unexpected dimension-check error: {exc}"
+                )

@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import yfinance as yf
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from data.features import FeatureEngineer
@@ -115,6 +116,9 @@ class SignalGenerator:
         max_position_size: float = 0.25,
         max_drawdown_pct: float | None = None,
         max_positions: int | None = None,
+        min_volume_ratio: float | None = 0.3,
+        earnings_buffer_days: int | None = None,
+        require_weekly_confirmation: bool = False,
     ):
         """
         Initialize the signal generator.
@@ -134,6 +138,19 @@ class SignalGenerator:
                               10% from its peak. None disables this limit.
             max_positions: Maximum number of concurrent open positions. Signals for new positions
                            are forced to HOLD once this count is reached. None disables this limit.
+            min_volume_ratio: Minimum ratio of current bar volume to 20-day average volume.
+                              Signals are suppressed to HOLD when volume is below this threshold,
+                              which typically indicates a holiday, thin market, or data error.
+                              Default 0.3 (30% of average). None disables this filter.
+            earnings_buffer_days: Number of days before or after a known earnings date during
+                                  which signals are suppressed to HOLD. Model behaviour near
+                                  earnings is unreliable due to abnormal volatility. Default None
+                                  (disabled). Set to e.g. 3 to suppress within ±3 days.
+            require_weekly_confirmation: When True, a BUY signal is only kept if the weekly
+                                         trend is bullish (price above 12-week MA), and a SELL
+                                         is only kept if the weekly trend is bearish. Signals
+                                         that conflict with the weekly direction are downgraded
+                                         to HOLD. Default False (disabled).
         """
         paths = ModelConfig.checkpoint_paths()
         self.model_path = model_path or paths["weights"]
@@ -145,6 +162,9 @@ class SignalGenerator:
         self.max_position_size = max_position_size
         self.max_drawdown_pct = max_drawdown_pct
         self.max_positions = max_positions
+        self.min_volume_ratio = min_volume_ratio
+        self.earnings_buffer_days = earnings_buffer_days
+        self.require_weekly_confirmation = require_weekly_confirmation
         self.model: SignalModel | None = None
         self.fetcher = StockDataFetcher(period="1y")
 
@@ -320,10 +340,17 @@ class SignalGenerator:
         if self.min_confidence is not None and confidence < self.min_confidence:
             direction = Direction.HOLD
 
+        # Data-quality filters: suppress signals on low-volume bars or near earnings
+        direction = self._apply_signal_filters(direction, ticker, df_features)
+
         # Portfolio risk limits: suppress new directional trades when limits are breached
         direction = self._apply_portfolio_limits(
             direction, ticker, portfolio_drawdown, open_position_count
         )
+
+        # Weekly trend confirmation: downgrade directional signals that fight the
+        # medium-term trend (price vs 12-week MA). Only active when opted in.
+        direction = self._apply_weekly_confirmation(direction, ticker)
 
         # Current price
         current_price = float(df_features["close"].iloc[-1])
@@ -370,6 +397,11 @@ class SignalGenerator:
             direction=direction,
         )
 
+        # Use the last data bar's date as the timestamp so signals are traceable
+        # to when they were valid, not when they were generated (important for
+        # historical replays, calibration, and backtest debugging).
+        timestamp = pd.Timestamp(df_features.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
+
         # Create signal
         return Signal(
             ticker=ticker,
@@ -380,7 +412,7 @@ class SignalGenerator:
             target_price=target_price,
             stop_loss=stop_loss,
             predicted_change=predicted_change,
-            timestamp=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            timestamp=timestamp,
             position_size=position_size,
             raw_confidence=raw_confidence_pct,
             is_calibrated=is_calibrated,
@@ -422,6 +454,109 @@ class SignalGenerator:
             )
             return Direction.HOLD
 
+        return direction
+
+    def _apply_signal_filters(
+        self,
+        direction: Direction,
+        ticker: str,
+        df_features: pd.DataFrame,
+    ) -> Direction:
+        """
+        Apply data-quality filters, returning HOLD if a filter is triggered.
+
+        Filters only apply to BUY and SELL; HOLD passes through unchanged.
+
+        Checks (in order):
+        - Low-volume: force HOLD when volume_ratio is below min_volume_ratio.
+        - Earnings proximity: force HOLD when within earnings_buffer_days of a
+          known earnings date (fails gracefully if data unavailable).
+
+        Args:
+            direction: Proposed signal direction
+            ticker: Ticker symbol used in warning messages and earnings lookup
+            df_features: Feature DataFrame with at least a ``volume_ratio`` column
+
+        Returns:
+            Original direction, or HOLD if a filter is triggered
+        """
+        if direction == Direction.HOLD:
+            return direction
+
+        # --- Low-volume filter ---
+        if (
+            self.min_volume_ratio is not None
+            and "volume_ratio" in df_features.columns
+        ):
+            last_vol_ratio = float(df_features["volume_ratio"].iloc[-1])
+            if last_vol_ratio < self.min_volume_ratio:
+                print(
+                    f"Low-volume filter: {ticker} volume ratio {last_vol_ratio:.2f} "
+                    f"< threshold {self.min_volume_ratio:.2f} — forcing HOLD"
+                )
+                return Direction.HOLD
+
+        # --- Earnings proximity filter ---
+        if self.earnings_buffer_days is not None:
+            try:
+                ticker_obj = yf.Ticker(ticker)
+                calendar = ticker_obj.calendar
+                if calendar is not None and "Earnings Date" in calendar:
+                    dates = calendar["Earnings Date"]
+                    if not isinstance(dates, list):
+                        dates = [dates]
+                    today = pd.Timestamp.now().normalize()
+                    for ed in dates:
+                        if ed is None:
+                            continue
+                        days_diff = abs((today - pd.Timestamp(ed).normalize()).days)
+                        if days_diff <= self.earnings_buffer_days:
+                            print(
+                                f"Earnings filter: {ticker} earnings on "
+                                f"{pd.Timestamp(ed).date()} "
+                                f"({days_diff}d away, buffer={self.earnings_buffer_days}d) "
+                                f"— forcing HOLD"
+                            )
+                            return Direction.HOLD
+            except Exception as e:
+                print(f"Warning: Could not check earnings for {ticker}: {e}")
+
+        return direction
+
+    def _apply_weekly_confirmation(self, direction: Direction, ticker: str) -> Direction:
+        """Downgrade a directional signal if the weekly trend disagrees.
+
+        Compares the latest weekly close against the 12-week simple moving average.
+        A BUY that conflicts with a bearish weekly trend is downgraded to HOLD, and
+        vice-versa for SELL.  Only active when ``require_weekly_confirmation=True``.
+
+        HOLD signals are never affected.  A ``'neutral'`` weekly reading (insufficient
+        data or fetch failure) is treated as confirmation so that data unavailability
+        does not silently suppress valid signals.
+
+        Args:
+            direction: Proposed signal direction after all other filters.
+            ticker: Ticker symbol passed to ``fetcher.fetch_weekly_trend()``.
+
+        Returns:
+            Original direction if confirmed or not required; HOLD if rejected.
+        """
+        if not self.require_weekly_confirmation or direction == Direction.HOLD:
+            return direction
+
+        trend = self.fetcher.fetch_weekly_trend(ticker)
+        if direction == Direction.BUY and trend == "bearish":
+            print(
+                f"Weekly trend bearish — downgrading BUY to HOLD for {ticker} "
+                f"(price below 12-week MA)"
+            )
+            return Direction.HOLD
+        if direction == Direction.SELL and trend == "bullish":
+            print(
+                f"Weekly trend bullish — downgrading SELL to HOLD for {ticker} "
+                f"(price above 12-week MA)"
+            )
+            return Direction.HOLD
         return direction
 
     def _check_ood(

@@ -205,6 +205,7 @@ class ModelTrainer:
         all_dates: list[pd.DatetimeIndex] = []
 
         loaded_tickers: list[str] = []
+        expected_n_features: int | None = None
         for ticker in tickers:
             try:
                 df = fetcher.fetch(ticker)
@@ -212,26 +213,39 @@ class ModelTrainer:
                 features, labels_list, prices, dates = self.prepare_data(
                     df, reference_data=ref_data
                 )
-                if self.holdout_date is not None:
-                    # Keep only data strictly before holdout_date so the model never
-                    # trains on any part of the evaluation window.
-                    cutoff = pd.Timestamp(self.holdout_date)
-                    mask = dates < cutoff
-                    features = features[mask]
-                    labels_list = [lbl[mask] for lbl in labels_list]
-                    prices = prices[mask]
-                    dates = dates[mask]
-                if len(features) == 0:
-                    print(f"Skipping {ticker}: no usable samples")
-                    continue
-                all_features.append(features)
-                all_labels.append(labels_list)
-                all_prices.append(prices)
-                all_dates.append(dates)
-                loaded_tickers.append(ticker)
-                print(f"Loaded {len(features)} samples from {ticker}")
             except Exception as e:
                 print(f"Error loading {ticker}: {e}")
+                continue
+
+            # Dimension check is outside the data-loading try/except so a mismatch
+            # propagates immediately instead of being silently swallowed.
+            if expected_n_features is None:
+                expected_n_features = features.shape[1]
+            elif features.shape[1] != expected_n_features:
+                raise ValueError(
+                    f"Feature dimension mismatch for {ticker}: expected "
+                    f"{expected_n_features} features but got {features.shape[1]}. "
+                    "All tickers must produce the same feature columns."
+                )
+
+            if self.holdout_date is not None:
+                # Keep only data strictly before holdout_date so the model never
+                # trains on any part of the evaluation window.
+                cutoff = pd.Timestamp(self.holdout_date)
+                mask = dates < cutoff
+                features = features[mask]
+                labels_list = [lbl[mask] for lbl in labels_list]
+                prices = prices[mask]
+                dates = dates[mask]
+            if len(features) == 0:
+                print(f"Skipping {ticker}: no usable samples")
+                continue
+            all_features.append(features)
+            all_labels.append(labels_list)
+            all_prices.append(prices)
+            all_dates.append(dates)
+            loaded_tickers.append(ticker)
+            print(f"Loaded {len(features)} samples from {ticker}")
 
         if not all_features:
             raise ValueError("No data loaded for training")

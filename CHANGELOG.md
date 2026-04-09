@@ -4,6 +4,26 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-04-09
+
+### S3 — Multi-timeframe weekly confirmation filter
+Added opt-in weekly trend confirmation to `SignalGenerator` (`require_weekly_confirmation=True`). A BUY signal is now downgraded to HOLD when the ticker's price is below its 12-week moving average (bearish weekly trend), and a SELL is downgraded when price is above it. The trend computation lives in `StockDataFetcher._compute_weekly_trend()` (pure, no network calls) and `fetch_weekly_trend()` which fetches 3 years of weekly data. A neutral reading (< 12 weeks of data or fetch failure) passes through without blocking the signal. The filter is disabled by default so existing behaviour is unchanged. 15 unit tests verify all confirmation / rejection / pass-through / disabled scenarios.
+
+
+### I12 — Added test coverage for losses, portfolio, and fetcher modules
+Three modules had zero test coverage despite being on critical paths. `tests/test_losses.py` (18 tests) verifies `sparse_focal_loss` and `balanced_focal_loss` output shape, positivity, gamma=0 cross-entropy equivalence, and class-weight exclusivity per INVARIANTS.md. `tests/test_portfolio.py` (21 tests) covers `PortfolioTrade` P&L arithmetic for long/short/leveraged positions, `PortfolioResult` metrics (win rate, drawdown, Sharpe), Kelly fraction capping, calibration bucket lookup, and a P1 regression test that documents the initial-capital sizing bug so it is detectable when fixed. `tests/test_fetcher.py` (16 tests) covers ticker alias resolution, preprocessing, empty-response fallback to zeros, and all 7 cross-asset series keys. Coverage moved from 0%/23%/0% to 100%/43%/88% respectively. Total suite: 282 tests, all passing.
+
+### S4 — Signal timestamp now reflects data date, not wall-clock time
+`SignalGenerator.generate()` previously stamped every `Signal` with `pd.Timestamp.now()`, meaning historical replays, calibration runs, and backtest debugging all produced signals dated today regardless of which data bar was used. This made audit trails unreliable and obscured when a signal was actually valid. The fix uses `df_features.index[-1]` (the last bar of the input feature DataFrame) as the timestamp, so signals are always traceable to the data that produced them. Two new tests in `tests/test_signal_generation.py` confirm the correct date is used and that historical signals are never stamped with today's date.
+
+### M7 — Confirmed label denominator is correct (false bug)
+Investigated the alleged off-by-one in max-return label creation. The code uses `sliding_window_view(close_vals[1:], window_shape=h)` so that for row `i`, the future-price window is `[close[i+1] … close[i+h]]`, and the denominator is `close_vals[i]` (the current bar's entry price). This is correct. The task description mistakenly claimed the denominator was `close[i-1]`. Six unit tests in `tests/test_training.py` — including `test_label_denominator_is_row_i_not_row_i_minus_1` — confirm this. No code was changed; M7 closed as WONTFIX.
+
+### M8 — Feature-dimension check before multi-ticker stacking
+Added a `ValueError` that fires immediately when a ticker's `prepare_data()` output has a different number of feature columns than the first ticker loaded. Previously, a dimension mismatch would cause `np.vstack` to crash with a cryptic shape error after potentially minutes of data fetching, with no indication of which ticker was the culprit. The check names the offending ticker and the expected vs actual column counts, making it immediately actionable. Also marked M6 (per-ticker normalization fix) as done — it was already implemented in a prior commit but not closed on the task board.
+
+---
+
 ## 2026-03-20
 
 ### M5 — Ensemble models (LSTM + GRU)

@@ -187,6 +187,44 @@ class StockDataFetcher:
                 result[futures[future]] = future.result()
         return result
 
+    def fetch_weekly_trend(self, ticker: str) -> str:
+        """Return the medium-term weekly trend for a ticker.
+
+        Fetches up to 3 years of weekly OHLCV data and compares the latest
+        closing price against the 12-week (≈ 3-month) simple moving average.
+
+        Returns:
+            ``'bullish'``  — price is above the 12-week MA (uptrend).
+            ``'bearish'``  — price is at or below the 12-week MA (downtrend).
+            ``'neutral'``  — insufficient data or fetch failed; caller should
+                             not block a signal on a neutral reading.
+        """
+        try:
+            weekly_fetcher = StockDataFetcher(period="3y", interval="1wk")
+            df = weekly_fetcher.fetch(ticker)
+            return self._compute_weekly_trend(df)
+        except (ValueError, OSError):
+            return "neutral"
+
+    @staticmethod
+    def _compute_weekly_trend(df: pd.DataFrame) -> str:
+        """Compute trend from a weekly OHLCV DataFrame (no network calls).
+
+        Args:
+            df: DataFrame with at least a ``close`` column.
+
+        Returns:
+            ``'bullish'``, ``'bearish'``, or ``'neutral'``.
+        """
+        if len(df) < 12:
+            return "neutral"
+        ma12 = df["close"].rolling(12).mean()
+        last_close = df["close"].iloc[-1]
+        last_ma = ma12.iloc[-1]
+        if pd.isna(last_ma):
+            return "neutral"
+        return "bullish" if last_close > last_ma else "bearish"
+
     @staticmethod
     def list_swedish_tickers() -> dict[str, str]:
         """Return a dictionary of available Swedish ticker aliases."""

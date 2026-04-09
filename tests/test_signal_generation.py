@@ -282,6 +282,105 @@ class TestAtrTakeProfit:
         assert target_large > target_small
 
 
+class TestSignalTimestamp:
+    """S4 — signal timestamp must reflect the last data bar, not wall-clock time."""
+
+    def _make_df_features(self, last_date: str):
+        import pandas as pd
+
+        dates = pd.date_range(end=last_date, periods=5, freq="B")
+        return pd.DataFrame({"close": [100.0] * 5}, index=dates)
+
+    def _make_gen(self, df_features, last_date: str):
+        """Build a minimal SignalGenerator with mocked internals."""
+        from unittest.mock import MagicMock, patch
+
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.feature_mean = None
+        gen.feature_std = None
+        gen.feature_columns = None
+        gen.input_dim = 1
+        gen.sequence_length = 3
+        gen.prediction_horizons = [5]
+        gen.min_confidence = None
+        gen.max_drawdown_pct = None
+        gen.max_positions = None
+        gen.min_volume_ratio = None
+        gen.earnings_buffer_days = None
+        gen.require_weekly_confirmation = False
+        gen.atr_multiplier = 2.0
+        gen.take_profit_atr_multiplier = 3.0
+        gen.stop_loss_pct = 0.05
+        gen.max_position_size = 0.25
+        gen.calibrator = None
+        gen.directional_calibrator = None
+
+        fake_model = MagicMock()
+        fake_model.predict.return_value = (
+            np.array([[0.80, 0.10, 0.10]]),
+            np.array([0]),
+            np.array([2.0]),
+        )
+        gen.model = fake_model
+
+        # fetcher is an instance attribute set in __init__; assign directly since
+        # we bypassed __init__ with __new__
+        mock_fetcher = MagicMock()
+        mock_fetcher.fetch.return_value = df_features
+        mock_fetcher.fetch_cross_asset_data.return_value = {}
+        gen.fetcher = mock_fetcher
+
+        return gen, patch
+
+    def test_timestamp_equals_last_data_bar(self):
+        """generate() must stamp the signal with the last bar's date, not today."""
+        import pandas as pd
+
+        last_date = "2023-06-15"
+        df_features = self._make_df_features(last_date)
+        gen, patch = self._make_gen(df_features, last_date)
+
+        with patch("signals.generator.FeatureEngineer") as MockFE:
+            from unittest.mock import MagicMock
+
+            mock_fe = MagicMock()
+            mock_fe.add_all_features.return_value = df_features
+            mock_fe.get_feature_columns.return_value = ["close"]
+            MockFE.return_value = mock_fe
+
+            signal = gen.generate("TEST.ST")
+
+        expected_ts = pd.Timestamp(last_date).strftime("%Y-%m-%d %H:%M:%S")
+        assert signal.timestamp == expected_ts, (
+            f"Expected timestamp {expected_ts!r}, got {signal.timestamp!r}. "
+            "Signal timestamp must use the last data bar's date."
+        )
+
+    def test_timestamp_is_not_today_for_historical_data(self):
+        """Timestamp must not silently use today when historical data is passed."""
+        import pandas as pd
+
+        last_date = "2021-01-04"
+        df_features = self._make_df_features(last_date)
+        gen, patch = self._make_gen(df_features, last_date)
+
+        with patch("signals.generator.FeatureEngineer") as MockFE:
+            from unittest.mock import MagicMock
+
+            mock_fe = MagicMock()
+            mock_fe.add_all_features.return_value = df_features
+            mock_fe.get_feature_columns.return_value = ["close"]
+            MockFE.return_value = mock_fe
+
+            signal = gen.generate("TEST.ST")
+
+        today = pd.Timestamp.now().strftime("%Y-%m-%d")
+        assert not signal.timestamp.startswith(today), (
+            "Historical signal must not be stamped with today's date."
+        )
+        assert signal.timestamp.startswith("2021-01-04")
+
+
 class TestCheckOod:
     """Tests for the out-of-distribution feature detection warning."""
 
@@ -341,3 +440,275 @@ class TestCheckOod:
         gen._check_ood(features_norm, ["x", "y"], threshold=2.0)
         captured = capsys.readouterr()
         assert "OOD WARNING" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# S1 — signal filters: low-volume and earnings
+# ---------------------------------------------------------------------------
+
+
+def _make_gen_with_filters(
+    min_volume_ratio: float | None = None,
+    earnings_buffer_days: int | None = None,
+) -> "SignalGenerator":
+    """Build a minimal SignalGenerator with S1 filter attributes set."""
+    gen = SignalGenerator.__new__(SignalGenerator)
+    gen.min_volume_ratio = min_volume_ratio
+    gen.earnings_buffer_days = earnings_buffer_days
+    return gen
+
+
+def _df_with_volume_ratio(ratio: float):  # noqa: ANN201
+    import pandas as pd
+
+    return pd.DataFrame({"volume_ratio": [ratio]})
+
+
+class TestVolumeFilter:
+    """S1 — low-volume filter inside _apply_signal_filters()."""
+
+    def test_low_volume_forces_hold(self, capsys):
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = _df_with_volume_ratio(0.3)
+        result = gen._apply_signal_filters(Direction.BUY, "X.ST", df)
+        assert result == Direction.HOLD
+        assert "Low-volume" in capsys.readouterr().out
+
+    def test_adequate_volume_passes_through(self):
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = _df_with_volume_ratio(0.8)
+        result = gen._apply_signal_filters(Direction.BUY, "X.ST", df)
+        assert result == Direction.BUY
+
+    def test_exactly_at_threshold_passes_through(self):
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = _df_with_volume_ratio(0.5)
+        result = gen._apply_signal_filters(Direction.BUY, "X.ST", df)
+        assert result == Direction.BUY
+
+    def test_disabled_when_min_volume_ratio_is_none(self):
+        gen = _make_gen_with_filters(min_volume_ratio=None)
+        df = _df_with_volume_ratio(0.01)  # would trigger if enabled
+        result = gen._apply_signal_filters(Direction.BUY, "X.ST", df)
+        assert result == Direction.BUY
+
+    def test_missing_volume_column_does_not_crash(self):
+        import pandas as pd
+
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = pd.DataFrame({"close": [100.0]})  # no volume_ratio column
+        result = gen._apply_signal_filters(Direction.BUY, "X.ST", df)
+        assert result == Direction.BUY  # no crash, filter simply skipped
+
+    def test_sell_direction_also_suppressed(self, capsys):
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = _df_with_volume_ratio(0.2)
+        result = gen._apply_signal_filters(Direction.SELL, "X.ST", df)
+        assert result == Direction.HOLD
+
+    def test_hold_short_circuits_no_volume_check(self, capsys):
+        gen = _make_gen_with_filters(min_volume_ratio=0.5)
+        df = _df_with_volume_ratio(0.1)  # would trigger if BUY/SELL
+        result = gen._apply_signal_filters(Direction.HOLD, "X.ST", df)
+        assert result == Direction.HOLD
+        assert "Low-volume" not in capsys.readouterr().out
+
+
+class TestEarningsFilter:
+    """S1 — earnings proximity filter inside _apply_signal_filters()."""
+
+    def test_within_buffer_forces_hold(self, capsys):
+        from unittest.mock import MagicMock, patch
+
+        gen = _make_gen_with_filters(earnings_buffer_days=5)
+        import pandas as pd
+
+        # Earnings 2 days from now
+        earnings_date = (pd.Timestamp.now() + pd.Timedelta(days=2)).date()
+        mock_ticker = MagicMock()
+        mock_ticker.calendar = {"Earnings Date": [earnings_date]}
+
+        with patch("signals.generator.yf.Ticker", return_value=mock_ticker):
+            result = gen._apply_signal_filters(
+                Direction.BUY, "X.ST", _df_with_volume_ratio(1.0)
+            )
+
+        assert result == Direction.HOLD
+        assert "Earnings" in capsys.readouterr().out
+
+    def test_outside_buffer_passes_through(self):
+        from unittest.mock import MagicMock, patch
+
+        gen = _make_gen_with_filters(earnings_buffer_days=5)
+        import pandas as pd
+
+        earnings_date = (pd.Timestamp.now() + pd.Timedelta(days=30)).date()
+        mock_ticker = MagicMock()
+        mock_ticker.calendar = {"Earnings Date": [earnings_date]}
+
+        with patch("signals.generator.yf.Ticker", return_value=mock_ticker):
+            result = gen._apply_signal_filters(
+                Direction.BUY, "X.ST", _df_with_volume_ratio(1.0)
+            )
+
+        assert result == Direction.BUY
+
+    def test_unavailable_earnings_data_does_not_crash(self):
+        from unittest.mock import MagicMock, patch
+
+        gen = _make_gen_with_filters(earnings_buffer_days=5)
+        mock_ticker = MagicMock()
+        mock_ticker.calendar = None  # no data
+
+        with patch("signals.generator.yf.Ticker", return_value=mock_ticker):
+            result = gen._apply_signal_filters(
+                Direction.BUY, "X.ST", _df_with_volume_ratio(1.0)
+            )
+
+        assert result == Direction.BUY  # graceful fallback
+
+    def test_yfinance_exception_does_not_crash(self):
+        from unittest.mock import patch
+
+        gen = _make_gen_with_filters(earnings_buffer_days=5)
+
+        with patch("signals.generator.yf.Ticker", side_effect=Exception("network error")):
+            result = gen._apply_signal_filters(
+                Direction.BUY, "X.ST", _df_with_volume_ratio(1.0)
+            )
+
+        assert result == Direction.BUY  # graceful fallback
+
+    def test_disabled_when_earnings_buffer_days_is_none(self):
+        gen = _make_gen_with_filters(earnings_buffer_days=None)
+        # No yfinance call should happen at all
+        result = gen._apply_signal_filters(
+            Direction.BUY, "X.ST", _df_with_volume_ratio(1.0)
+        )
+        assert result == Direction.BUY
+
+    def test_hold_short_circuits_no_earnings_check(self):
+        from unittest.mock import patch
+
+        gen = _make_gen_with_filters(earnings_buffer_days=5)
+
+        called = []
+        with patch("signals.generator.yf.Ticker", side_effect=lambda t: called.append(t)):
+            gen._apply_signal_filters(Direction.HOLD, "X.ST", _df_with_volume_ratio(1.0))
+
+        assert called == []  # yfinance never called for HOLD
+
+
+# ---------------------------------------------------------------------------
+# S3 — multi-timeframe confirmation (daily signal confirmed by weekly trend)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeWeeklyTrend:
+    """Unit tests for StockDataFetcher._compute_weekly_trend().
+
+    Tests the pure trend calculation with synthetic DataFrames — no network calls.
+    """
+
+    def _df(self, closes: list[float]):
+        import pandas as pd
+
+        dates = pd.date_range(end="2024-01-01", periods=len(closes), freq="W")
+        return pd.DataFrame({"close": closes}, index=dates)
+
+    def test_price_above_ma12_is_bullish(self):
+        from data.fetcher import StockDataFetcher
+
+        # 11 bars at 100 + 1 bar at 120 → MA12 ≈ 101.7, close = 120 → bullish
+        closes = [100.0] * 11 + [120.0]
+        assert StockDataFetcher._compute_weekly_trend(self._df(closes)) == "bullish"
+
+    def test_price_below_ma12_is_bearish(self):
+        from data.fetcher import StockDataFetcher
+
+        # 11 bars at 100 + 1 bar at 80 → MA12 ≈ 98.3, close = 80 → bearish
+        closes = [100.0] * 11 + [80.0]
+        assert StockDataFetcher._compute_weekly_trend(self._df(closes)) == "bearish"
+
+    def test_fewer_than_12_bars_returns_neutral(self):
+        from data.fetcher import StockDataFetcher
+
+        closes = [100.0] * 10  # only 10 weeks of data
+        assert StockDataFetcher._compute_weekly_trend(self._df(closes)) == "neutral"
+
+    def test_exactly_12_bars_uses_full_ma(self):
+        from data.fetcher import StockDataFetcher
+
+        # Flat at 100 for 11, then spike to 150 → above MA → bullish
+        closes = [100.0] * 11 + [150.0]
+        assert StockDataFetcher._compute_weekly_trend(self._df(closes)) == "bullish"
+
+    def test_empty_dataframe_returns_neutral(self):
+        import pandas as pd
+
+        from data.fetcher import StockDataFetcher
+
+        df = pd.DataFrame({"close": []})
+        assert StockDataFetcher._compute_weekly_trend(df) == "neutral"
+
+
+class TestApplyWeeklyConfirmation:
+    """Unit tests for SignalGenerator._apply_weekly_confirmation().
+
+    Mocks fetcher.fetch_weekly_trend to avoid network calls.
+    """
+
+    def _gen(self, require: bool, trend: str) -> "SignalGenerator":
+        from unittest.mock import MagicMock
+
+        gen = SignalGenerator.__new__(SignalGenerator)
+        gen.require_weekly_confirmation = require
+        mock_fetcher = MagicMock()
+        mock_fetcher.fetch_weekly_trend.return_value = trend
+        gen.fetcher = mock_fetcher
+        return gen
+
+    def test_buy_confirmed_by_bullish_weekly(self):
+        gen = self._gen(require=True, trend="bullish")
+        assert gen._apply_weekly_confirmation(Direction.BUY, "X.ST") == Direction.BUY
+
+    def test_buy_rejected_by_bearish_weekly(self):
+        gen = self._gen(require=True, trend="bearish")
+        assert gen._apply_weekly_confirmation(Direction.BUY, "X.ST") == Direction.HOLD
+
+    def test_sell_confirmed_by_bearish_weekly(self):
+        gen = self._gen(require=True, trend="bearish")
+        assert gen._apply_weekly_confirmation(Direction.SELL, "X.ST") == Direction.SELL
+
+    def test_sell_rejected_by_bullish_weekly(self):
+        gen = self._gen(require=True, trend="bullish")
+        assert gen._apply_weekly_confirmation(Direction.SELL, "X.ST") == Direction.HOLD
+
+    def test_buy_passes_on_neutral_trend(self):
+        """Neutral trend (insufficient data) must not block the signal."""
+        gen = self._gen(require=True, trend="neutral")
+        assert gen._apply_weekly_confirmation(Direction.BUY, "X.ST") == Direction.BUY
+
+    def test_sell_passes_on_neutral_trend(self):
+        gen = self._gen(require=True, trend="neutral")
+        assert gen._apply_weekly_confirmation(Direction.SELL, "X.ST") == Direction.SELL
+
+    def test_hold_always_passes_through(self):
+        """HOLD is never affected by weekly confirmation."""
+        gen = self._gen(require=True, trend="bearish")
+        assert gen._apply_weekly_confirmation(Direction.HOLD, "X.ST") == Direction.HOLD
+
+    def test_disabled_does_not_call_fetcher(self):
+        """When require_weekly_confirmation=False, fetcher must never be called."""
+        gen = self._gen(require=False, trend="bearish")
+        result = gen._apply_weekly_confirmation(Direction.BUY, "X.ST")
+        assert result == Direction.BUY
+        gen.fetcher.fetch_weekly_trend.assert_not_called()
+
+    def test_disabled_buy_not_blocked(self):
+        gen = self._gen(require=False, trend="bearish")
+        assert gen._apply_weekly_confirmation(Direction.BUY, "X.ST") == Direction.BUY
+
+    def test_disabled_sell_not_blocked(self):
+        gen = self._gen(require=False, trend="bullish")
+        assert gen._apply_weekly_confirmation(Direction.SELL, "X.ST") == Direction.SELL

@@ -103,8 +103,8 @@ Check the project follows its own documented standards:
 
 - **CONTRIBUTIONS.md**: no new abstractions unless required; no unnecessary error handling; minimal changes.
 - **CLAUDE.md**: task board, scope discipline, CHANGELOG entries.
-- **AGENTS.md**: are all tasks properly tracked? Are any stale `in_progress` tasks left unclaimed?
-  Read AGENTS.md and report any orphaned locks or tasks.
+- **TASKS.md**: are all tasks properly tracked? Are any stale `in_progress` tasks left unclaimed?
+  Read TASKS.md and report any orphaned locks or tasks.
 - **CHANGELOG.md**: does it have recent entries matching recent commits?
 
 ---
