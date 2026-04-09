@@ -34,6 +34,7 @@ def _make_df(n_rows: int = 60, with_volume: bool = True) -> pd.DataFrame:
 def _mock_model(signal_idx: int = 0) -> MagicMock:
     """Mock SignalModel that always returns the same signal."""
     model = MagicMock()
+    model.prediction_horizons = [5, 10, 20]
 
     def _predict(X: np.ndarray):
         batch = X.shape[0]
@@ -41,7 +42,16 @@ def _mock_model(signal_idx: int = 0) -> MagicMock:
         probs[:, signal_idx] = 0.8
         return probs, np.full(batch, signal_idx), np.full(batch, 2.0)
 
+    def _predict_per_horizon(X: np.ndarray):
+        batch = X.shape[0]
+        probs = np.zeros((batch, 3))
+        probs[:, signal_idx] = 0.8
+        horizon_probs = [probs.copy() for _ in model.prediction_horizons]
+        horizon_classes = [np.full(batch, signal_idx) for _ in model.prediction_horizons]
+        return horizon_probs, horizon_classes, np.full(batch, 2.0)
+
     model.predict.side_effect = _predict
+    model.predict_per_horizon.side_effect = _predict_per_horizon
     return model
 
 

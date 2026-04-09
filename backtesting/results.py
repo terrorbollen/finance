@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 
-from signals.direction import Direction as Signal
+from models.direction import Direction as Signal
 
 
 @dataclass

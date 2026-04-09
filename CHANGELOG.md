@@ -6,6 +6,45 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ## 2026-03-20
 
+### M5 — Ensemble models (LSTM + GRU)
+Added a GRU backbone variant to `SignalModel` via a new `backbone` parameter, and an `EnsembleSignalModel` class that averages per-horizon softmax probabilities from both architectures before applying the majority-vote consensus. The GRU uses plain GAP with no attention, making it architecturally complementary to the LSTM's multi-head attention path. `ModelTrainer` gains a `use_ensemble` flag that trains the GRU alongside the LSTM and assembles both into an `EnsembleSignalModel`; the ensemble's public interface is identical to `SignalModel` so all callers (backtester, signal generator) work unchanged. The `use_ensemble` flag is also logged to MLflow hyperparameters for full run reproducibility.
+
+### B10 — Per-horizon signals wired into the backtester
+
+Replaced the consensus `model.predict()` call in `backtester.py` with `model.predict_per_horizon()`, which returns one set of probabilities and a predicted class per trained horizon head. Each `HorizonPrediction` now carries the signal from the head specifically trained for that horizon (e.g. the 5-day head feeds the 5-day result row) rather than a majority-vote copy. For horizons not present in the trained model, the backtester falls back to the average across all heads. This means per-horizon backtest metrics (accuracy, win-rate, Sharpe) now reflect genuine per-horizon model quality rather than identical signals differing only in holding period. Updated `_mock_model` in the backtester test suite to implement `predict_per_horizon`.
+
+### M9 — Walk-forward trainer now raises on zero windows instead of silently succeeding
+
+`WalkForwardTrainer.run()` in `models/walk_forward.py` would silently complete with no trained windows if `purge_gap + embargo_gap` exceeded `validation_days`, or if the total sample count was smaller than `initial_train_days`. The training loop ran over an empty list, `_run_walk_forward()` returned `([], None)`, and the caller received a result with NaN metrics — no model ever trained. Fixed by raising a `ValueError` immediately after `generate_windows()` returns an empty list, including the gap sizes, validation window size, and sample count so the user can diagnose and adjust parameters.
+
+### M4 — Expose per-horizon predictions from multi-horizon model heads
+Added `predict_per_horizon()` to `SignalModel`, returning a list of softmax probability arrays and predicted classes — one per trained horizon — alongside the price target. `predict()` is refactored to call it internally and continues to return the majority-vote consensus, keeping all existing callers (`signals/generator.py`, `backtesting/backtester.py`) unchanged. B10 can now update the backtester to use `predict_per_horizon()` so that per-horizon backtest rows reflect genuine per-horizon signal quality rather than just holding-period effects.
+
+### F9 — Add zero guard to ADX di_plus/di_minus to prevent Inf on constant-price rows
+
+`_add_adx()` in `data/features.py` divided the smoothed directional movement by `atr_w` (EWM true range) without checking for zero. On constant-price rows, trading halts, or very early sparse data, `atr_w` is zero and the division produces `Inf`, which propagates into the `adx_14` feature column. The existing `fillna(0)` on the final `dx` step did not protect the intermediate `di_plus`/`di_minus` values. Fixed by appending `.where(atr_w > 0, 0.0)` to both directional-index calculations so zero-ATR periods produce `di=0` (no directional movement) rather than `Inf`.
+
+---
+
+## 2026-03-20
+
+### F7: Feature mismatch is now a hard error with zero tolerance
+Removed the `> 10% missing features → warn and continue` fallback from `backtesting/backtester.py` and `signals/generator.py`. Both now raise `ValueError` immediately if any single feature from the training config is absent from the data, naming the missing columns. The old tolerance was dangerous: a model trained on 37 features silently receiving 33 produces degraded, unpredictable predictions with no indication in output. The fix also simplifies the code — `feature_cols` is now set directly from `self.feature_columns` rather than a filtered subset. Tests updated to match the new zero-tolerance contract.
+
+---
+
+## 2026-03-20
+
+### B18 — Move `Direction` enum to `models/direction.py` (fully resolve INVARIANTS violation)
+`Direction`, `BUY_IDX`, `HOLD_IDX`, `SELL_IDX`, and `IDX_TO_DIRECTION` have been moved from `signals/direction.py` to the new `models/direction.py`. All five in-scope callers (`backtesting/results.py`, `signals/generator.py`, `models/signal_model.py`, `models/training.py`) now import from `models.direction`. `signals/direction.py` is kept as a thin re-export shim so existing test imports continue to work. This removes both the `backtesting/ → signals/` and `models/ → signals/` dependencies, completing the module isolation required by INVARIANTS.md.
+
+### R9 — Add regression tests for DirectionalCalibrator fallback path
+
+Added two tests to `tests/test_calibration.py`. `test_fitted_direction_uses_calibrator_not_raw` constructs a deliberately overconfident calibrator (high raw scores map to ~20% actual accuracy), then asserts the fitted direction returns a calibrated value well below the raw input — catching any regression where the calibrator is silently bypassed. `test_fallback_is_per_direction_not_global` fits BUY and SELL with opposite calibration curves and verifies each uses its own calibrator independently while the unfitted HOLD direction returns the raw value unchanged. Together these make the "silently returns raw for all directions" regression visible in CI.
+
+### B15 — Fix `backtesting/plot.py` INVARIANTS violation (cross-package import)
+`plot.py` was importing `Direction` directly from `signals/direction.py`, violating the INVARIANTS.md rule that `backtesting/` and `signals/` must not import from each other. The fix re-exports `Signal` via `backtesting/results.py` (which is already the source of the `HorizonPrediction.predicted_signal` type), so `plot.py` now imports only from within its own package. The deeper violation in `results.py` itself is tracked as B18.
+
 ### B16 — Narrow bare `except Exception` blocks in backtester.py
 
 Three `except Exception` catch-all blocks in `backtesting/backtester.py` were replaced with specific exception types: model weight loading now catches `(FileNotFoundError, OSError, ValueError)`, benchmark computation catches `(ValueError, KeyError, IndexError, OSError)`, and the relative-volume calculation catches `(IndexError, ValueError, TypeError)`. The relative-volume handler was also missing any log output — a genuine bug (e.g. an unexpected dtype causing a `TypeError`) would silently produce `None` with no trace; it now prints a warning with the exception message. Narrowing these handlers means unexpected exceptions (shape mismatches, programming errors) propagate normally and are visible in tracebacks.

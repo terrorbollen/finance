@@ -5,8 +5,34 @@ import os
 import numpy as np
 from tensorflow import keras
 
+from models.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 from models.losses import balanced_focal_loss, sparse_focal_loss
-from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
+
+
+def _apply_majority_vote(
+    signal_probs_list: list[np.ndarray],
+    horizon_classes: list[np.ndarray],
+    price_target: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Majority-vote consensus across horizon heads.
+
+    Returns (avg_probs, signal_class, price_target) matching the SignalModel.predict()
+    contract.  Used by both SignalModel and EnsembleSignalModel so the logic lives in
+    one place.
+    """
+    batch_size = len(price_target)
+    votes = np.stack(horizon_classes, axis=1)  # (batch, n_horizons)
+    avg_probs = np.mean(np.stack(signal_probs_list, axis=0), axis=0)  # (batch, 3)
+    n_horizons = len(signal_probs_list)
+    majority = n_horizons // 2 + 1
+    signal_class = np.full(batch_size, HOLD_IDX, dtype=int)
+    for i in range(batch_size):
+        v = votes[i]
+        if np.sum(v == BUY_IDX) >= majority:
+            signal_class[i] = BUY_IDX
+        elif np.sum(v == SELL_IDX) >= majority:
+            signal_class[i] = SELL_IDX
+    return avg_probs, signal_class, price_target
 
 
 class SignalModel:
@@ -19,6 +45,10 @@ class SignalModel:
 
     At inference, a consensus vote across horizons determines the final signal:
     2+ horizons must agree on Buy or Sell, otherwise Hold is emitted.
+
+    The ``backbone`` parameter selects the recurrent layer:
+    - ``"lstm"`` (default): LSTM with multi-head attention and GAP
+    - ``"gru"``: GRU with GAP (no attention) — complementary to LSTM in an ensemble
     """
 
     def __init__(
@@ -32,7 +62,10 @@ class SignalModel:
         focal_alpha: float = 0.25,
         class_weights: list[float] | None = None,
         prediction_horizons: list[int] | None = None,
+        backbone: str = "lstm",
     ):
+        if backbone not in ("lstm", "gru"):
+            raise ValueError(f"backbone must be 'lstm' or 'gru', got {backbone!r}")
         self.input_dim = input_dim
         self.sequence_length = sequence_length
         self.hidden_units = hidden_units if hidden_units is not None else [64, 32]
@@ -44,6 +77,7 @@ class SignalModel:
         self.prediction_horizons = (
             prediction_horizons if prediction_horizons is not None else [5, 10, 20]
         )
+        self.backbone = backbone
         self.model: keras.Model | None = None
         self._build_model()
 
@@ -51,10 +85,18 @@ class SignalModel:
         """Build the TensorFlow model with one signal head per horizon."""
         inputs = keras.Input(shape=(self.sequence_length, self.input_dim))
 
-        # Shared LSTM backbone
-        x = keras.layers.LSTM(self.hidden_units[0], return_sequences=True)(inputs)
-        x = keras.layers.MultiHeadAttention(num_heads=4, key_dim=self.hidden_units[0] // 4)(x, x)
-        x = keras.layers.GlobalAveragePooling1D()(x)
+        # Recurrent backbone — LSTM uses attention for weighted sequence aggregation;
+        # GRU uses plain GAP, making the two architectures genuinely complementary.
+        if self.backbone == "lstm":
+            x = keras.layers.LSTM(self.hidden_units[0], return_sequences=True)(inputs)
+            x = keras.layers.MultiHeadAttention(
+                num_heads=4, key_dim=self.hidden_units[0] // 4
+            )(x, x)
+            x = keras.layers.GlobalAveragePooling1D()(x)
+        else:  # gru
+            x = keras.layers.GRU(self.hidden_units[0], return_sequences=True)(inputs)
+            x = keras.layers.GlobalAveragePooling1D()(x)
+
         x = keras.layers.Dropout(self.dropout_rate)(x)
         x = keras.layers.Dense(self.hidden_units[1], activation="relu")(x)
         x = keras.layers.BatchNormalization()(x)
@@ -105,9 +147,42 @@ class SignalModel:
             metrics=metrics,
         )
 
+    def predict_per_horizon(
+        self, X: np.ndarray
+    ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
+        """
+        Generate per-horizon predictions from each classification head.
+
+        Args:
+            X: Input features of shape (batch, sequence_length, features)
+
+        Returns:
+            Tuple of (horizon_probs, horizon_classes, price_target)
+            - horizon_probs: List of softmax probability arrays, one per horizon,
+              each of shape (batch, 3). Ordered to match self.prediction_horizons.
+            - horizon_classes: List of predicted class arrays, one per horizon,
+              each of shape (batch,). Values: 0=Buy, 1=Hold, 2=Sell.
+            - price_target: Predicted price change percentage, shape (batch,)
+        """
+        if self.model is None:
+            raise ValueError("Model not built or loaded")
+
+        outputs = self.model.predict(X, verbose=0)
+        # outputs = [signal_5d, signal_10d, ..., price_target]
+        signal_probs_list: list[np.ndarray] = outputs[:-1]  # list of (batch, 3)
+        price_target: np.ndarray = outputs[-1]  # (batch, 1)
+
+        horizon_classes = [np.argmax(p, axis=1) for p in signal_probs_list]
+
+        return signal_probs_list, horizon_classes, price_target.flatten()
+
     def predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Generate predictions using majority-vote consensus across horizons.
+        Generate consensus predictions by majority-voting across all horizon heads.
+
+        Calls predict_per_horizon() internally and aggregates results. Use
+        predict_per_horizon() directly when per-horizon signal quality matters
+        (e.g. in the backtester via B10).
 
         Args:
             X: Input features of shape (batch, sequence_length, features)
@@ -116,39 +191,10 @@ class SignalModel:
             Tuple of (signal_probs, signal_class, price_target)
             - signal_probs: Averaged softmax probabilities across horizons (batch, 3)
             - signal_class: Consensus class (0=Buy, 1=Hold, 2=Sell)
-            - price_target: Predicted price change percentage
+            - price_target: Predicted price change percentage, shape (batch,)
         """
-        if self.model is None:
-            raise ValueError("Model not built or loaded")
-
-        outputs = self.model.predict(X, verbose=0)
-        # outputs = [signal_5d, signal_10d, ..., price_target]
-        signal_probs_list = outputs[:-1]  # list of (batch, 3)
-        price_target = outputs[-1]  # (batch, 1)
-
-        batch_size = len(X)
-
-        # Per-horizon argmax votes: (n_horizons, batch)
-        votes = np.stack(
-            [np.argmax(p, axis=1) for p in signal_probs_list], axis=1
-        )  # (batch, n_horizons)
-
-        # Average probabilities for confidence reporting
-        avg_probs = np.mean(np.stack(signal_probs_list, axis=0), axis=0)  # (batch, 3)
-
-        # Majority-vote consensus: need >half of horizons to agree on Buy or Sell.
-        # With 1 horizon → threshold=1; with 3 → threshold=2; scales automatically.
-        n_horizons = len(signal_probs_list)
-        majority = n_horizons // 2 + 1
-        signal_class = np.full(batch_size, HOLD_IDX, dtype=int)  # default HOLD
-        for i in range(batch_size):
-            v = votes[i]
-            if np.sum(v == BUY_IDX) >= majority:
-                signal_class[i] = BUY_IDX
-            elif np.sum(v == SELL_IDX) >= majority:
-                signal_class[i] = SELL_IDX
-
-        return avg_probs, signal_class, price_target.flatten()
+        signal_probs_list, horizon_classes, price_target = self.predict_per_horizon(X)
+        return _apply_majority_vote(signal_probs_list, horizon_classes, price_target)
 
     def save(self, path: str):
         """Save model weights to disk."""
@@ -168,6 +214,54 @@ class SignalModel:
         """Print model summary."""
         if self.model:
             self.model.summary()
+
+
+class EnsembleSignalModel:
+    """Ensemble of an LSTM-backbone and a GRU-backbone SignalModel.
+
+    Predictions are formed by averaging per-horizon softmax probabilities from
+    both models before applying the majority-vote consensus.  Each model is
+    trained and saved independently; the ensemble is assembled at inference time.
+
+    The public interface (``predict``, ``predict_per_horizon``, ``save``, ``load``,
+    ``summary``) is identical to ``SignalModel`` so all callers work unchanged.
+    """
+
+    def __init__(self, lstm_model: SignalModel, gru_model: SignalModel) -> None:
+        self.lstm_model = lstm_model
+        self.gru_model = gru_model
+        self.prediction_horizons = lstm_model.prediction_horizons
+
+    def predict_per_horizon(
+        self, X: np.ndarray
+    ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
+        """Average per-horizon probabilities from both backbones."""
+        lstm_probs, _, lstm_price = self.lstm_model.predict_per_horizon(X)
+        gru_probs, _, gru_price = self.gru_model.predict_per_horizon(X)
+        avg_probs = [(lp + gp) / 2 for lp, gp in zip(lstm_probs, gru_probs, strict=True)]
+        avg_classes = [np.argmax(p, axis=1) for p in avg_probs]
+        return avg_probs, avg_classes, (lstm_price + gru_price) / 2
+
+    def predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Consensus signal from the averaged ensemble probabilities."""
+        signal_probs_list, horizon_classes, price_target = self.predict_per_horizon(X)
+        return _apply_majority_vote(signal_probs_list, horizon_classes, price_target)
+
+    def save(self, path: str) -> None:
+        """Save LSTM weights to ``path`` and GRU weights to the ``_gru`` variant."""
+        self.lstm_model.save(path)
+        self.gru_model.save(path.replace(".weights.h5", "_gru.weights.h5"))
+
+    def load(self, path: str) -> None:
+        """Load both model weights from the paths produced by ``save``."""
+        self.lstm_model.load(path)
+        self.gru_model.load(path.replace(".weights.h5", "_gru.weights.h5"))
+
+    def summary(self) -> None:
+        print("=== LSTM backbone ===")
+        self.lstm_model.summary()
+        print("=== GRU backbone ===")
+        self.gru_model.summary()
 
 
 def create_sequences(

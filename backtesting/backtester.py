@@ -181,16 +181,14 @@ class Backtester:
 
         # Get feature columns
         if self.feature_columns is not None:
-            available_cols = [c for c in self.feature_columns if c in df.columns]
-            missing = set(self.feature_columns) - set(df.columns)
+            missing = sorted(set(self.feature_columns) - set(df.columns))
             if missing:
-                missing_pct = len(missing) / len(self.feature_columns)
-                if missing_pct > 0.1:
-                    raise ValueError(
-                        f"Too many features missing from training config ({len(missing)}/{len(self.feature_columns)}): {missing}"
-                    )
-                print(f"Warning: {len(missing)} minor features missing from training: {missing}")
-            feature_cols = available_cols
+                raise ValueError(
+                    f"Feature mismatch: {len(missing)} column(s) present in training config "
+                    f"but missing from data — retrain or fix the data pipeline. "
+                    f"Missing: {missing}"
+                )
+            feature_cols = self.feature_columns
         else:
             feature_cols = engineer.get_feature_columns()
 
@@ -273,13 +271,15 @@ class Backtester:
                     for idx in backtest_indices
                 ]
             )
-            signal_probs_all, signal_classes_all, price_targets_all = self.model.predict(X_all)
+            horizon_probs_list, horizon_classes_list, price_targets_all = (
+                self.model.predict_per_horizon(X_all)
+            )
         else:
             # Chunked path: retrain at the boundary of every chunk.
             n = self.retrain_every
             chunks = [backtest_indices[i : i + n] for i in range(0, len(backtest_indices), n)]
-            all_probs_parts: list[np.ndarray] = []
-            all_classes_parts: list[np.ndarray] = []
+            all_horizon_probs_parts: list[list[np.ndarray]] = []
+            all_horizon_classes_parts: list[list[np.ndarray]] = []
             all_prices_parts: list[np.ndarray] = []
 
             for chunk_idx, chunk in enumerate(chunks):
@@ -298,14 +298,28 @@ class Backtester:
                 )
                 if self.model is None:
                     raise RuntimeError("Model lost after retrain")
-                probs, classes, prices = self.model.predict(X_chunk)
-                all_probs_parts.append(probs)
-                all_classes_parts.append(classes)
+                h_probs, h_classes, prices = self.model.predict_per_horizon(X_chunk)
+                all_horizon_probs_parts.append(h_probs)
+                all_horizon_classes_parts.append(h_classes)
                 all_prices_parts.append(prices)
 
-            signal_probs_all = np.vstack(all_probs_parts)
-            signal_classes_all = np.concatenate(all_classes_parts)
+            n_heads = len(self.model.prediction_horizons)
+            horizon_probs_list = [
+                np.vstack([parts[h] for parts in all_horizon_probs_parts])
+                for h in range(n_heads)
+            ]
+            horizon_classes_list = [
+                np.concatenate([parts[h] for parts in all_horizon_classes_parts])
+                for h in range(n_heads)
+            ]
             price_targets_all = np.concatenate(all_prices_parts)
+
+        # Average probs across heads for fallback (horizons not in the trained set)
+        avg_probs_all = np.mean(np.stack(horizon_probs_list, axis=0), axis=0)  # (n, 3)
+
+        # Map trained horizon values → head index for O(1) lookup in inner loop
+        model_horizons = self.model.prediction_horizons
+        horizon_head_idx: dict[int, int] = {h: i for i, h in enumerate(model_horizons)}
 
         # Precompute relative volumes for all indices
         rel_vols: np.ndarray | None = None
@@ -326,11 +340,6 @@ class Backtester:
             pred_date = df_index[idx].date()
             current_price = float(df["close"].iloc[idx])
 
-            direction_idx = int(signal_classes_all[i])
-            predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
-            probs_row = signal_probs_all[i]
-            confidence = float(probs_row[direction_idx])
-            all_probs = (float(probs_row[0]), float(probs_row[1]), float(probs_row[2]))
             predicted_change = float(price_targets_all[i])
             rv = float(rel_vols[idx]) if rel_vols is not None else float("nan")
             relative_volume = None if (rel_vols is None or np.isnan(rv)) else rv
@@ -339,6 +348,17 @@ class Backtester:
 
             daily_pred = DailyPrediction(date=pred_date, current_price=current_price)
             for horizon in horizons:
+                head_idx = horizon_head_idx.get(horizon)
+                if head_idx is not None:
+                    probs_row = horizon_probs_list[head_idx][i]
+                    direction_idx = int(horizon_classes_list[head_idx][i])
+                else:
+                    # Horizon not trained — fall back to average across all heads
+                    probs_row = avg_probs_all[i]
+                    direction_idx = int(np.argmax(probs_row))
+                predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
+                confidence = float(probs_row[direction_idx])
+                all_probs = (float(probs_row[0]), float(probs_row[1]), float(probs_row[2]))
                 daily_pred.add_prediction(
                     HorizonPrediction(
                         prediction_date=pred_date,

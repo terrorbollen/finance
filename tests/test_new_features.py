@@ -292,12 +292,12 @@ class TestFeatureMismatch:
         bt.enforce_position_cooldown = False
         return bt
 
-    def test_raises_when_over_10_percent_missing(self, monkeypatch):
+    def test_raises_when_any_feature_missing(self, monkeypatch):
         import backtesting.backtester as bt_module
 
         feature_columns = [f"f{i}" for i in range(20)]
-        # DataFrame only has 17 of 20 features (15% missing → should raise)
-        df = self._make_df([f"f{i}" for i in range(17)])
+        # DataFrame only has 19 of 20 features — zero tolerance means this raises
+        df = self._make_df([f"f{i}" for i in range(19)])
 
         mock_fetcher = MagicMock()
         mock_fetcher.fetch.return_value = df
@@ -313,17 +313,17 @@ class TestFeatureMismatch:
         )
 
         bt = self._backtester(feature_columns)
-        with pytest.raises(ValueError, match="Too many features missing"):
+        with pytest.raises(ValueError, match="Feature mismatch"):
             bt.run("FAKE.ST")
 
-    def test_no_raise_when_within_10_percent(self, monkeypatch):
+    def test_no_raise_when_all_features_present(self, monkeypatch):
         from datetime import date as dt
 
         import backtesting.backtester as bt_module
 
         feature_columns = [f"f{i}" for i in range(20)]
-        # DataFrame has 19 of 20 features + required close/volume cols (5% missing → should not raise)
-        df = self._make_df([f"f{i}" for i in range(19)] + ["close", "volume"])
+        # DataFrame has all 20 features + required close/volume cols
+        df = self._make_df([f"f{i}" for i in range(20)] + ["close", "volume"])
 
         mock_fetcher = MagicMock()
         mock_fetcher.fetch.return_value = df
@@ -343,7 +343,7 @@ class TestFeatureMismatch:
         try:
             bt.run("FAKE.ST", start_date=dt(2023, 1, 2), end_date=dt(2023, 3, 31))
         except ValueError as e:
-            assert "Too many features missing" not in str(e)
+            assert "Feature mismatch" not in str(e)
 
 
 # ---------------------------------------------------------------------------

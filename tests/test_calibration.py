@@ -271,6 +271,79 @@ class TestDirectionalCalibrator:
         with pytest.raises(ValueError):
             DirectionalCalibrator.from_backtest_results([], horizon=5)
 
+    def test_fitted_direction_uses_calibrator_not_raw(self):
+        """Fitted direction must return the calibrator's output, not the raw value.
+
+        Regression guard: if calibrate() silently returns raw_confidence for ALL
+        directions (ignoring fitted calibrators), both the fitted and unfitted
+        directions would return the same thing.  This test constructs a calibrator
+        that is guaranteed to map the test input to a *different* value than raw,
+        then asserts the fitted direction deviates from raw while the unfitted one
+        does not.
+        """
+        rng = np.random.default_rng(0)
+        n = 300
+
+        # Build data where high raw confidences are actually wrong (overconfident model).
+        # This forces the calibrator to map e.g. raw=0.8 → calibrated≈0.3.
+        raw = rng.uniform(0.6, 0.95, n)
+        # Only 20% accuracy even at high confidence — severe overconfidence
+        correct = rng.uniform(0, 1, n) < 0.2
+
+        dc = DirectionalCalibrator(num_buckets=5)
+        dc.fit("BUY", raw, correct.astype(float))
+
+        raw_input = 0.85
+        buy_result = dc.calibrate("BUY", raw_input)
+        sell_result = dc.calibrate("SELL", raw_input)
+
+        # SELL is unfitted — must return the raw value exactly
+        assert sell_result == raw_input, "Unfitted direction must return raw confidence"
+
+        # BUY is fitted on overconfident data — calibrated value must be well below raw
+        assert buy_result < raw_input - 0.1, (
+            f"Fitted direction should return calibrated value (got {buy_result:.3f}), "
+            f"not raw ({raw_input}).  Regression: calibrator is being ignored."
+        )
+
+    def test_fallback_is_per_direction_not_global(self):
+        """Fallback must apply only to the unfitted direction, not to fitted ones.
+
+        Constructs a DirectionalCalibrator where BUY and SELL are both fitted but
+        with different calibration curves, and HOLD is not fitted.  Asserts:
+          - BUY and SELL return their respective calibrated outputs (not raw).
+          - HOLD returns raw.
+          - BUY and SELL outputs differ from each other (each uses its own calibrator).
+        """
+        rng = np.random.default_rng(1)
+        n = 300
+
+        # BUY: overconfident — high raw → low calibrated
+        raw_buy = rng.uniform(0.6, 0.95, n)
+        correct_buy = rng.uniform(0, 1, n) < 0.2
+
+        # SELL: underconfident — moderate raw → high calibrated
+        raw_sell = rng.uniform(0.35, 0.65, n)
+        correct_sell = rng.uniform(0, 1, n) < 0.85
+
+        dc = DirectionalCalibrator(num_buckets=5)
+        dc.fit("BUY", raw_buy, correct_buy.astype(float))
+        dc.fit("SELL", raw_sell, correct_sell.astype(float))
+        # HOLD intentionally not fitted
+
+        probe = 0.6
+        buy_out = dc.calibrate("BUY", probe)
+        sell_out = dc.calibrate("SELL", probe)
+        hold_out = dc.calibrate("HOLD", probe)
+
+        assert hold_out == probe, "Unfitted HOLD must return raw confidence"
+        # BUY was fitted on overconfident data → calibrated < probe
+        assert buy_out < probe - 0.05, f"BUY calibrated={buy_out:.3f} should be below raw={probe}"
+        # SELL was fitted on underconfident data → calibrated > probe
+        assert sell_out > probe + 0.05, f"SELL calibrated={sell_out:.3f} should be above raw={probe}"
+        # The two fitted directions must produce different outputs
+        assert abs(buy_out - sell_out) > 0.1, "BUY and SELL must use separate calibrators"
+
 
 class TestCalibrationBucket:
     """Tests for the CalibrationBucket dataclass."""

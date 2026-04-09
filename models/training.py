@@ -12,6 +12,7 @@ from tensorflow import keras
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
 from models.config import FETCH_PERIOD, ModelConfig
+from models.direction import BUY_IDX, HOLD_IDX, SELL_IDX
 from models.mlflow_tracking import (
     log_hyperparameters,
     log_metrics,
@@ -19,8 +20,7 @@ from models.mlflow_tracking import (
     setup_mlflow,
     training_run,
 )
-from models.signal_model import SignalModel, create_sequences
-from signals.direction import BUY_IDX, HOLD_IDX, SELL_IDX
+from models.signal_model import EnsembleSignalModel, SignalModel, create_sequences
 
 
 class ModelTrainer:
@@ -36,6 +36,7 @@ class ModelTrainer:
         sell_threshold: float = -0.02,
         use_adaptive_thresholds: bool = True,
         holdout_date: date | None = None,
+        use_ensemble: bool = False,
     ):
         """
         Initialize the trainer.
@@ -49,6 +50,8 @@ class ModelTrainer:
             buy_threshold: Min % gain to label as Buy
             sell_threshold: Max % loss to label as Sell
             use_adaptive_thresholds: If True, adjust thresholds based on stock volatility
+            use_ensemble: If True, train a GRU model alongside the LSTM and return an
+                          EnsembleSignalModel that averages both backbones' predictions.
         """
         self.sequence_length = sequence_length
         self.prediction_horizons = (
@@ -60,7 +63,8 @@ class ModelTrainer:
         self.sell_threshold = sell_threshold
         self.use_adaptive_thresholds = use_adaptive_thresholds
         self.holdout_date = holdout_date  # If set, only train on data before this date
-        self.model: SignalModel | None = None
+        self.use_ensemble = use_ensemble
+        self.model: SignalModel | EnsembleSignalModel | None = None
         self.feature_columns: list[str] = []
         # Set by prepare_data(); declared here so the object's full shape is visible
         self.feature_mean: np.ndarray | None = None
@@ -433,6 +437,49 @@ class ModelTrainer:
             cfg.save(config_path)
             print(f"Saved model config to {config_path}")
 
+            # Ensemble: train a GRU backbone and wrap both models.
+            if self.use_ensemble:
+                print("\nTraining GRU backbone for ensemble...")
+                gru_path = model_path.replace(".weights.h5", "_gru.weights.h5")
+                gru_model = SignalModel(
+                    input_dim=input_dim,
+                    sequence_length=self.sequence_length,
+                    use_focal_loss=use_focal_loss,
+                    class_weights=cw,
+                    prediction_horizons=self.prediction_horizons,
+                    backbone="gru",
+                )
+                gru_callbacks = [
+                    keras.callbacks.ModelCheckpoint(
+                        gru_path,
+                        save_best_only=True,
+                        save_weights_only=True,
+                        monitor="val_loss",
+                    ),
+                    keras.callbacks.EarlyStopping(
+                        patience=10, restore_best_weights=True, monitor="val_loss"
+                    ),
+                    keras.callbacks.ReduceLROnPlateau(
+                        factor=0.5, patience=5, min_lr=1e-6, monitor="val_loss"
+                    ),
+                ]
+                gru_fit_kwargs: dict = {
+                    "x": X_train,
+                    "y": y_train_dict,
+                    "validation_data": (X_val, y_val_dict),
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "callbacks": gru_callbacks,
+                    "verbose": 1,
+                }
+                if not use_focal_loss:
+                    gru_fit_kwargs["sample_weight"] = fit_kwargs["sample_weight"]
+                assert gru_model.model is not None
+                gru_model.model.fit(**gru_fit_kwargs)
+                assert self.model is not None
+                self.model = EnsembleSignalModel(self.model, gru_model)
+                print("Ensemble assembled (LSTM + GRU).")
+
             return history, test_results, config_path
 
         # Run training with or without MLflow tracking
@@ -477,6 +524,7 @@ class ModelTrainer:
                         "epochs": epochs,
                         "batch_size": batch_size,
                         "use_focal_loss": use_focal_loss,
+                        "use_ensemble": self.use_ensemble,
                         "num_tickers": len(tickers),
                         "train_samples": len(X_train),
                         "val_samples": len(X_val),

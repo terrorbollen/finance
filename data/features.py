@@ -136,8 +136,14 @@ class FeatureEngineer:
 
         alpha = 1.0 / period
         atr_w = tr.ewm(alpha=alpha, adjust=False).mean()
-        di_plus = 100 * dm_plus.ewm(alpha=alpha, adjust=False).mean() / atr_w
-        di_minus = 100 * dm_minus.ewm(alpha=alpha, adjust=False).mean() / atr_w
+        # Guard against zero ATR (constant-price rows, trading halts, early sparse data).
+        # Division would produce Inf; .where() replaces those positions with 0 (no trend).
+        di_plus = (100 * dm_plus.ewm(alpha=alpha, adjust=False).mean() / atr_w).where(
+            atr_w > 0, 0.0
+        )
+        di_minus = (100 * dm_minus.ewm(alpha=alpha, adjust=False).mean() / atr_w).where(
+            atr_w > 0, 0.0
+        )
 
         dx = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus)).fillna(0)
         self.df["adx_14"] = dx.ewm(alpha=alpha, adjust=False).mean()

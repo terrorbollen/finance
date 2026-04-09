@@ -395,6 +395,14 @@ class WalkForwardTrainer:
 
         # Generate windows
         windows = self.generate_windows(len(X))
+        if not windows:
+            raise ValueError(
+                f"Walk-forward produced 0 windows. "
+                f"purge_gap={self.purge_gap} + embargo_gap={self.embargo_gap} "
+                f"may exceed validation_days={self.validation_days}, "
+                f"or n_samples={len(X)} < initial_train_days={self.initial_train_days}. "
+                f"Try reducing purge_gap/embargo_gap or increasing the date range."
+            )
         if verbose:
             print(f"Generated {len(windows)} walk-forward windows\n")
 

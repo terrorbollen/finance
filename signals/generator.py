@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from data.features import FeatureEngineer
 from data.fetcher import StockDataFetcher
 from models.config import ModelConfig
+from models.direction import IDX_TO_DIRECTION, Direction
 from models.signal_model import SignalModel
 from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
-from signals.direction import IDX_TO_DIRECTION, Direction
 
 
 class Signal(BaseModel):
@@ -244,16 +244,14 @@ class SignalGenerator:
 
         # Use feature columns from training config if available
         if self.feature_columns is not None:
-            available_cols = [c for c in self.feature_columns if c in df_features.columns]
-            missing = set(self.feature_columns) - set(df_features.columns)
+            missing = sorted(set(self.feature_columns) - set(df_features.columns))
             if missing:
-                missing_pct = len(missing) / len(self.feature_columns)
-                if missing_pct > 0.1:
-                    raise ValueError(
-                        f"Too many features missing from training config ({len(missing)}/{len(self.feature_columns)}): {missing}"
-                    )
-                print(f"Warning: {len(missing)} minor features missing from training: {missing}")
-            feature_cols = available_cols
+                raise ValueError(
+                    f"Feature mismatch: {len(missing)} column(s) present in training config "
+                    f"but missing from data — retrain or fix the data pipeline. "
+                    f"Missing: {missing}"
+                )
+            feature_cols = self.feature_columns
         else:
             feature_cols = engineer.get_feature_columns()
 
