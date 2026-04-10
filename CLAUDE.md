@@ -99,8 +99,10 @@ uv sync
 # Install with dev dependencies
 uv sync --all-extras
 
-# Run the application
-uv run python main.py
+# Run the application (--config is required for train/backtest/calibrate/portfolio)
+uv run python main.py train --config configs/indexes.json
+uv run python main.py backtest <TICKER> --config configs/indexes.json
+uv run python main.py calibrate --config configs/indexes.json
 
 # Add a new dependency
 uv add <package>

@@ -2,8 +2,10 @@
 """CLI entry point for the trading signal generator."""
 
 import argparse
+import json
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 from backtesting import Backtester, PortfolioBacktester
 from backtesting.results import HorizonMetrics, Signal
@@ -20,6 +22,34 @@ from models.training import ModelTrainer
 from models.walk_forward import WalkForwardTrainer
 from signals.calibration import ConfidenceCalibrator, DirectionalCalibrator
 from signals.generator import SignalGenerator
+
+
+def _load_config(config_path: str | None) -> dict:
+    """Load a training/backtest config file.
+
+    Exits with a clear error if no path is given — all commands require a config.
+    """
+    if config_path is None:
+        print(
+            "Error: --config is required. Example: --config configs/indexes.json",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    p = Path(config_path)
+    if not p.exists():
+        print(f"Error: config file '{config_path}' not found.", file=sys.stderr)
+        sys.exit(1)
+    return json.loads(p.read_text())
+
+
+def _checkpoint_name(config_path: str | None) -> str | None:
+    """Derive checkpoint directory name from config filename.
+
+    configs/stocks.json  ->  'stocks'
+    configs/indexes.json ->  'indexes'
+    None                 ->  None  (uses default checkpoints/ directory)
+    """
+    return Path(config_path).stem if config_path else None
 
 
 def _check_calibration_staleness(generator: SignalGenerator, max_days: int = 30) -> None:
@@ -80,35 +110,34 @@ def cmd_scan(args):
 
 def cmd_train(args):
     """Train the signal model."""
-    if args.tickers:
-        tickers = args.tickers
-    else:
-        # Default training tickers - expanded for more diverse training data
-        tickers = [
-            "VOLV-B.ST",  # Volvo
-            "ERIC-B.ST",  # Ericsson
-            "HM-B.ST",  # H&M
-            "SEB-A.ST",  # SEB Bank
-            "ATCO-A.ST",  # Atlas Copco
-            "INVE-B.ST",  # Investor
-            "NDA-SE.ST",  # Nordea
-            "SWED-A.ST",  # Swedbank
-            "SAND.ST",  # Sandvik
-            "ABB.ST",  # ABB
-        ]
+    cfg = _load_config(getattr(args, "config", None))
+    model_name = _checkpoint_name(getattr(args, "config", None))
+
+    # CLI args win; config is the source of truth for everything else
+    tickers = args.tickers or cfg["tickers"]
+    epochs = args.epochs if args.epochs is not None else cfg["epochs"]
+    batch_size = args.batch_size if args.batch_size is not None else cfg["batch_size"]
+    use_focal_loss = cfg["focal_loss"] and not args.no_focal_loss
+    horizons = (
+        [int(h) for h in args.horizons.split(",")]
+        if getattr(args, "horizons", None)
+        else cfg["prediction_horizons"]
+    )
 
     print(f"\nTraining model on {len(tickers)} tickers...")
-    print(f"Epochs: {args.epochs}")
+    print(f"Config: {getattr(args, 'config', None) or 'defaults'}")
+    print(f"Epochs: {epochs}  |  Batch size: {batch_size}  |  Horizons: {horizons}")
     print(f"Walk-forward: {args.walk_forward}")
     print("-" * 50)
 
     track = not args.no_mlflow
     cli_tags = {
-        "cli.epochs": str(args.epochs),
-        "cli.batch_size": str(args.batch_size),
+        "cli.epochs": str(epochs),
+        "cli.batch_size": str(batch_size),
         "cli.walk_forward": str(args.walk_forward),
-        "cli.focal_loss": str(not args.no_focal_loss),
+        "cli.focal_loss": str(use_focal_loss),
         "cli.tickers": ",".join(tickers),
+        "cli.config": getattr(args, "config", None) or "defaults",
     }
 
     try:
@@ -119,36 +148,42 @@ def cmd_train(args):
                 initial_train_days=args.initial_days,
                 validation_days=args.window_size,
                 step_days=args.window_size,
+                sequence_length=cfg["sequence_length"],
+                prediction_horizons=horizons,
+                buy_threshold=cfg["buy_threshold"],
+                sell_threshold=cfg["sell_threshold"],
             )
             results = trainer.run(
                 tickers=tickers,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
+                epochs=epochs,
+                batch_size=batch_size,
                 track_with_mlflow=track,
                 tags=cli_tags,
             )
             print("\n" + results.summary())
         else:
-            # Standard training
             from datetime import datetime as _dt
 
-            paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
+            paths = ModelConfig.checkpoint_paths(model_name)
             holdout_date = (
                 _dt.strptime(args.holdout_start, "%Y-%m-%d").date()
                 if getattr(args, "holdout_start", None)
                 else None
             )
-            horizons = (
-                [int(h) for h in args.horizons.split(",")]
-                if getattr(args, "horizons", None)
-                else None
+            trainer = ModelTrainer(
+                holdout_date=holdout_date,
+                prediction_horizons=horizons,
+                sequence_length=cfg["sequence_length"],
+                buy_threshold=cfg["buy_threshold"],
+                sell_threshold=cfg["sell_threshold"],
+                train_ratio=cfg["train_ratio"],
+                val_ratio=cfg["val_ratio"],
             )
-            trainer = ModelTrainer(holdout_date=holdout_date, prediction_horizons=horizons)
             results = trainer.train(
                 tickers=tickers,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                use_focal_loss=not args.no_focal_loss,
+                epochs=epochs,
+                batch_size=batch_size,
+                use_focal_loss=use_focal_loss,
                 track_with_mlflow=track,
                 tags=cli_tags,
                 model_path=paths["weights"],
@@ -158,12 +193,16 @@ def cmd_train(args):
 
             # Auto-calibrate unless opted out
             if not args.no_calibrate:
+                cal_horizon = cfg["prediction_horizons"][0]
                 _run_calibration(
                     tickers=results["loaded_tickers"],
-                    horizon=5,
+                    horizon=cal_horizon,
                     output_path=paths["calibration"],
+                    commission=cfg["commission"],
+                    slippage_factor=cfg["slippage_factor"],
+                    leverage=cfg["leverage"],
                     mlflow_run_id=results.get("mlflow_run_id"),
-                    model_name=getattr(args, "name", None),
+                    model_name=model_name,
                     directional_output_path=paths["calibration_directional"],
                 )
     except Exception as e:
@@ -184,18 +223,19 @@ def cmd_list(args):
         print(f"{alias:<20} {symbol:<20}")
 
 
-def _run_leverage_comparison(args, start_date, end_date, horizons):
+def _run_leverage_comparison(args, start_date, end_date, horizons, commission, slippage_factor, model_name):
     """Run backtest at 1x, 2x, 3x leverage and print a comparison table."""
-    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
+    paths = ModelConfig.checkpoint_paths(model_name)
     leverages = [1.0, 2.0, 3.0]
     results = []
     for lev in leverages:
         backtester = Backtester(
             model_path=paths["weights"],
-            commission_pct=args.commission,
+            commission_pct=commission,
+            slippage_factor=slippage_factor,
             strict_holdout=not args.no_strict_holdout,
             leverage=lev,
-            enforce_position_cooldown=args.position_cooldown,
+            enforce_position_cooldown=True,
         )
         result = backtester.run(
             ticker=args.ticker,
@@ -230,6 +270,9 @@ def _run_leverage_comparison(args, start_date, end_date, horizons):
 
 def cmd_backtest(args):
     """Run backtesting on historical data."""
+    cfg = _load_config(getattr(args, "config", None))
+    model_name = _checkpoint_name(getattr(args, "config", None))
+
     print(f"\nBacktesting {args.ticker}...")
 
     # Parse dates
@@ -240,23 +283,27 @@ def cmd_backtest(args):
     if args.end_date:
         end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
 
-    # Parse horizons
-    horizons = args.horizons if args.horizons else [1, 2, 3, 4, 5, 6, 7]
+    # CLI args win; config is the source of truth for everything else
+    commission = args.commission if args.commission is not None else cfg["commission"]
+    leverage = args.leverage if args.leverage is not None else cfg["leverage"]
+    horizons = args.horizons if args.horizons else cfg["prediction_horizons"]
 
     # --compare-leverage: run 1x/2x/3x and print a comparison table, then exit
     if args.compare_leverage:
-        _run_leverage_comparison(args, start_date, end_date, horizons)
+        _run_leverage_comparison(args, start_date, end_date, horizons, commission, cfg["slippage_factor"], model_name)
         return
 
-    paths = ModelConfig.checkpoint_paths(getattr(args, "name", None))
+    paths = ModelConfig.checkpoint_paths(model_name)
     backtester = Backtester(
         model_path=paths["weights"],
-        commission_pct=args.commission,
+        commission_pct=commission,
         strict_holdout=not args.no_strict_holdout,
-        leverage=args.leverage,
-        enforce_position_cooldown=args.position_cooldown,
+        leverage=leverage,
+        slippage_factor=cfg["slippage_factor"],
+        enforce_position_cooldown=True,
         retrain_every=getattr(args, "retrain_every", None),
         retrain_epochs=getattr(args, "retrain_epochs", 20),
+        retrain_batch_size=cfg["batch_size"],
     )
     try:
         result = backtester.run(
@@ -361,16 +408,25 @@ def cmd_portfolio(args):
     """Run a portfolio backtest across multiple tickers with shared capital."""
     from datetime import datetime as _dt
 
+    cfg = _load_config(getattr(args, "config", None))
+    model_name = _checkpoint_name(getattr(args, "config", None))
+
     start_date = _dt.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
     end_date = _dt.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
 
+    tickers = args.tickers or cfg["tickers"]
+    commission = args.commission if args.commission is not None else cfg["commission"]
+    leverage = args.leverage if args.leverage is not None else cfg["leverage"]
+    horizon = args.horizon if args.horizon is not None else cfg["prediction_horizons"][0]
+
     backtester = PortfolioBacktester(
-        model_name=getattr(args, "name", None),
-        commission_pct=args.commission,
+        model_name=model_name,
+        commission_pct=commission,
+        slippage_factor=cfg["slippage_factor"],
         initial_capital=args.capital,
         max_positions=args.max_positions,
         strict_holdout=not args.no_strict_holdout,
-        leverage=args.leverage,
+        leverage=leverage,
         use_kelly=args.kelly,
         kelly_max=args.kelly_max,
         adx_filter=getattr(args, "adx_filter", 0.0),
@@ -378,8 +434,8 @@ def cmd_portfolio(args):
         reversal_exit=getattr(args, "reversal_exit", False),
     )
     result = backtester.run(
-        tickers=args.tickers,
-        horizon=args.horizon,
+        tickers=tickers,
+        horizon=horizon,
         start_date=start_date,
         end_date=end_date,
     )
@@ -437,6 +493,9 @@ def _run_calibration(
     tickers: list[str],
     horizon: int,
     output_path: str,
+    commission: float,
+    slippage_factor: float,
+    leverage: float,
     num_buckets: int = 10,
     mlflow_run_id: str | None = None,
     model_name: str | None = None,
@@ -466,7 +525,12 @@ def _run_calibration(
     direction_correct: dict[str, list[bool]] = {"BUY": [], "SELL": [], "HOLD": []}
 
     cal_paths = ModelConfig.checkpoint_paths(model_name)
-    backtester = Backtester(model_path=cal_paths["weights"])
+    backtester = Backtester(
+        commission_pct=commission,
+        slippage_factor=slippage_factor,
+        leverage=leverage,
+        model_path=cal_paths["weights"],
+    )
     total_start = time.monotonic()
 
     for i, ticker in enumerate(tickers, 1):
@@ -567,19 +631,23 @@ def _run_calibration(
 
 def cmd_calibrate(args):
     """Train confidence calibrator from backtest results."""
-    name = getattr(args, "name", None)
-    tickers = args.tickers or ["VOLV-B.ST", "ERIC-B.ST", "HM-B.ST", "SEB-A.ST", "ATCO-A.ST"]
-    paths = ModelConfig.checkpoint_paths(name)
+    cfg = _load_config(args.config)
+    model_name = _checkpoint_name(args.config)
+    tickers = args.tickers or cfg["tickers"]
+    paths = ModelConfig.checkpoint_paths(model_name)
     output_path = args.output or paths["calibration"]
     directional_output_path = paths["calibration_directional"]
-    horizon = args.horizon if args.horizon is not None else 5
+    horizon = args.horizon if args.horizon is not None else cfg["prediction_horizons"][0]
 
     ok = _run_calibration(
         tickers=tickers,
         horizon=horizon,
         output_path=output_path,
+        commission=cfg["commission"],
+        slippage_factor=cfg["slippage_factor"],
+        leverage=cfg["leverage"],
         num_buckets=args.buckets,
-        model_name=name,
+        model_name=model_name,
         directional_output_path=directional_output_path,
     )
     if not ok:
@@ -637,8 +705,8 @@ Examples:
     # train command
     train_parser = subparsers.add_parser("train", help="Train the signal model")
     train_parser.add_argument("tickers", nargs="*", help="Ticker symbols for training data")
-    train_parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
-    train_parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
+    train_parser.add_argument("--epochs", type=int, default=None, help="Number of training epochs (default: from config or 50)")
+    train_parser.add_argument("--batch-size", type=int, default=None, dest="batch_size", help="Training batch size (default: from config or 32)")
     train_parser.add_argument(
         "--walk-forward",
         action="store_true",
@@ -671,7 +739,12 @@ Examples:
         help="Skip automatic confidence calibration after training.",
     )
     train_parser.add_argument(
-        "--name", default=None, help="Model name — saves to checkpoints/<name>/ (e.g. 'financials')"
+        "--config",
+        default=None,
+        metavar="FILE",
+        help="Path to training config JSON (e.g. configs/stocks.json). "
+        "Sets tickers, epochs, horizons, thresholds, and backtest defaults. "
+        "CLI args override individual config values.",
     )
     train_parser.add_argument(
         "--holdout-start",
@@ -716,8 +789,8 @@ Examples:
     backtest_parser.add_argument(
         "--commission",
         type=float,
-        default=0.001,
-        help="One-way commission as decimal (default: 0.001 = 0.1%%)",
+        default=None,
+        help="One-way commission as decimal (default: from config or 0.001 = 0.1%%)",
     )
     backtest_parser.add_argument(
         "--no-mlflow",
@@ -734,21 +807,14 @@ Examples:
     backtest_parser.add_argument(
         "--leverage",
         type=float,
-        default=1.0,
-        help="Leverage multiplier applied to each trade (default: 1.0 = no leverage).",
+        default=None,
+        help="Leverage multiplier applied to each trade (default: from config or 1.0 = no leverage).",
     )
     backtest_parser.add_argument(
         "--compare-leverage",
         action="store_true",
         dest="compare_leverage",
         help="Run backtest at 1x, 2x, and 3x leverage and print a comparison table.",
-    )
-    backtest_parser.add_argument(
-        "--position-cooldown",
-        action="store_true",
-        dest="position_cooldown",
-        help="Enforce non-overlapping positions: after a trade, skip the next N days "
-        "where N = horizon. Prevents the >100%% drawdown artefact from overlapping trades.",
     )
     backtest_parser.add_argument(
         "--retrain-every",
@@ -773,6 +839,14 @@ Examples:
         help="Model name — loads from checkpoints/<name>/ (e.g. 'financials')",
     )
     backtest_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help="Path to config JSON (e.g. configs/indexes.json). "
+        "Sets commission, leverage, horizons, and slippage. "
+        "CLI args override individual config values.",
+    )
+    backtest_parser.add_argument(
         "--plot",
         nargs="?",
         const="",
@@ -795,10 +869,18 @@ Examples:
     portfolio_parser = subparsers.add_parser(
         "portfolio", help="Backtest multiple tickers as a portfolio with shared capital"
     )
-    portfolio_parser.add_argument("tickers", nargs="+", help="Ticker symbols")
+    portfolio_parser.add_argument("tickers", nargs="*", help="Ticker symbols (default: from config)")
     portfolio_parser.add_argument("--name", default=None, help="Model name (e.g. 'indexes')")
     portfolio_parser.add_argument(
-        "--horizon", type=int, default=5, help="Holding period in trading days (default: 5)"
+        "--config",
+        default=None,
+        metavar="FILE",
+        help="Path to config JSON (e.g. configs/indexes.json). "
+        "Sets tickers, commission, leverage, and holding horizon. "
+        "CLI args override individual config values.",
+    )
+    portfolio_parser.add_argument(
+        "--horizon", type=int, default=None, help="Holding period in trading days (default: from config or 5)"
     )
     portfolio_parser.add_argument(
         "--capital", type=float, default=10_000.0, help="Initial capital (default: 10000)"
@@ -813,8 +895,8 @@ Examples:
     portfolio_parser.add_argument(
         "--commission",
         type=float,
-        default=0.001,
-        help="One-way commission as decimal (default: 0.001)",
+        default=None,
+        help="One-way commission as decimal (default: from config or 0.001)",
     )
     portfolio_parser.add_argument("--start-date", dest="start_date", help="Start date YYYY-MM-DD")
     portfolio_parser.add_argument("--end-date", dest="end_date", help="End date YYYY-MM-DD")
@@ -825,7 +907,7 @@ Examples:
         help="Allow overlap with training data",
     )
     portfolio_parser.add_argument(
-        "--leverage", type=float, default=1.0, help="Base leverage multiplier (default: 1.0)"
+        "--leverage", type=float, default=None, help="Base leverage multiplier (default: from config or 1.0)"
     )
     portfolio_parser.add_argument(
         "--kelly",
@@ -892,7 +974,13 @@ Examples:
     calibrate_parser = subparsers.add_parser(
         "calibrate", help="Train confidence calibrator from backtest data"
     )
-    calibrate_parser.add_argument("tickers", nargs="*", help="Ticker symbols for calibration data")
+    calibrate_parser.add_argument("tickers", nargs="*", help="Ticker symbols for calibration data (default: from config)")
+    calibrate_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help="Path to config JSON (e.g. configs/indexes.json). Sets tickers, commission, slippage, and horizon.",
+    )
     calibrate_parser.add_argument(
         "--horizon",
         type=int,

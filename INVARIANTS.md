@@ -10,7 +10,7 @@ Rules that must always hold. Violating any of these will silently degrade the sy
 
 **Why:** The model's weights were optimized against training-distribution inputs. Using current-window stats changes the input distribution and degrades accuracy. It also introduces a subtle form of lookahead because current stats depend on future data points within the window.
 
-**Where it matters:** `signals/generator.py` (`generate()`), `backtesting/backtester.py`. Both have a fallback that computes stats from current data if the config is missing — this fallback is for development only and must not be relied on in production.
+**Where it matters:** `signals/generator.py` (`generate()`), `backtesting/backtester.py`. A fallback that computes stats from the current window still exists but violates this rule and should not be relied on — task I9 tracks its removal.
 
 ---
 
@@ -36,7 +36,7 @@ Rules that must always hold. Violating any of these will silently degrade the sy
 
 ## Signal class encoding is fixed: BUY=0, HOLD=1, SELL=2
 
-**Rule:** The integer encoding of signal classes must not change. This mapping is hardcoded in `SignalModel`, `SignalGenerator`, and `Backtester`.
+**Rule:** The integer encoding of signal classes must not change. The canonical mapping is defined in `models/direction.py` (`BUY_IDX=0`, `HOLD_IDX=1`, `SELL_IDX=2`, `DIRECTION_TO_IDX`) and shared by all modules.
 
 **Why:** Changing it in one place without changing the others swaps BUY and SELL signals throughout the system with no error raised.
 
@@ -90,12 +90,3 @@ Rules that must always hold. Violating any of these will silently degrade the sy
 
 **Why:** These modules serve different purposes — one generates live signals, the other runs historical simulations. Coupling them creates circular dependency risk and makes it harder to test either in isolation.
 
----
-
-## Reference data must share the stock DataFrame's DatetimeIndex
-
-**Rule:** Cross-asset reference DataFrames passed to `FeatureEngineer` (OMXS30, USD/SEK, EUR/SEK) must have a DatetimeIndex that aligns with the stock DataFrame's index.
-
-**Why:** Features are computed by direct index alignment. A mismatch introduces NaN values that propagate through all downstream calculations.
-
-**How it's enforced:** `FeatureEngineer` uses `.reindex()` to align indexes, filling gaps with forward-fill. A large number of gaps is a sign the reference data is misaligned.

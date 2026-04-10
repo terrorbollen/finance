@@ -20,16 +20,16 @@ docker-compose up -d
 
 ```bash
 # Analyze a single stock
-uv run python main.py analyze VOLV-B.ST
+uv run python main.py analyze VOLV-B.ST --config configs/indexes.json
 
 # Scan top Swedish stocks for signals
-uv run python main.py scan
+uv run python main.py scan --config configs/indexes.json
 
 # Train the model
-uv run python main.py train
+uv run python main.py train --config configs/indexes.json
 
 # Backtest on historical data
-uv run python main.py backtest VOLV-B.ST
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json
 
 # View history of backtest and training results
 uv run python main.py history
@@ -53,40 +53,39 @@ uv run python main.py scan
 uv run python main.py scan ERIC-B.ST HM-B.ST VOLV-B.ST --min-confidence 55
 ```
 
-### `train [tickers...]`
-Train the LSTM model. MLflow tracking is on by default.
+### `train`
+Train the LSTM model. `--config` is required. MLflow tracking is on by default.
 ```bash
-uv run python main.py train
-uv run python main.py train --epochs 100 --batch-size 64
-uv run python main.py train --walk-forward              # Walk-forward validation
-uv run python main.py train --no-focal-loss             # Use standard cross-entropy
-uv run python main.py train --no-mlflow                 # Disable MLflow tracking
+uv run python main.py train --config configs/indexes.json
+uv run python main.py train --config configs/indexes.json --epochs 100 --batch-size 64
+uv run python main.py train --config configs/indexes.json --walk-forward   # Walk-forward validation
+uv run python main.py train --config configs/indexes.json --no-focal-loss  # Standard cross-entropy
+uv run python main.py train --config configs/indexes.json --no-mlflow      # Disable MLflow tracking
 ```
 
 ### `backtest <ticker>`
-Run the model on historical data day-by-day. Results are logged to MLflow automatically.
+Run the model on historical data day-by-day. `--config` is required. Results are logged to MLflow automatically.
 ```bash
-uv run python main.py backtest VOLV-B.ST
-uv run python main.py backtest VOLV-B.ST --horizons 1 3 5
-uv run python main.py backtest VOLV-B.ST --start-date 2024-01-01 --end-date 2024-12-31
-uv run python main.py backtest VOLV-B.ST --output results.csv
-uv run python main.py backtest VOLV-B.ST --no-mlflow              # Skip MLflow logging
-uv run python main.py backtest VOLV-B.ST --leverage 2.0           # 2x leverage
-uv run python main.py backtest VOLV-B.ST --position-cooldown      # No overlapping positions
-uv run python main.py backtest VOLV-B.ST --name production        # Use named model checkpoint
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --start-date 2024-01-01
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --output results.csv
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --no-mlflow
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --leverage 2.0
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --position-cooldown
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --name production
 
 # Periodic retraining during the backtest (simulates production retraining cadence)
-uv run python main.py backtest VOLV-B.ST --retrain-every 60       # Retrain every 60 trading days
-uv run python main.py backtest VOLV-B.ST --retrain-every 30 --retrain-epochs 30
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --retrain-every 60
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json --retrain-every 30 --retrain-epochs 30
 ```
 
 `--retrain-every N` splits the backtest into chunks of N trading days. At each boundary the model is retrained on all data available up to that date, then predictions resume with the updated model. This simulates the realistic scenario of periodic retraining in production. Without this flag, the same initial model is used for the entire period.
 
-### `calibrate [tickers...]`
-Fit a confidence calibrator from backtest data so raw model probabilities map to real accuracy rates.
+### `calibrate`
+Fit a confidence calibrator from backtest data so raw model probabilities map to real accuracy rates. `--config` is required.
 ```bash
-uv run python main.py calibrate
-uv run python main.py calibrate --horizon 3
+uv run python main.py calibrate --config configs/indexes.json
+uv run python main.py calibrate --config configs/indexes.json --horizon 10
 ```
 
 ### `history`
@@ -149,20 +148,20 @@ The typical loop for improving the model:
 
 ### 1. Establish a baseline
 ```bash
-uv run python main.py backtest VOLV-B.ST
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json
 uv run python main.py history --ticker VOLV-B.ST
 ```
 Note the current `h5.accuracy`, `h5.sharpe`, and `h5.net_return`.
 
 ### 2. Retrain with a change
 ```bash
-# e.g. more epochs, different loss, different tickers
-uv run python main.py train --epochs 100
+# e.g. more epochs, different loss — edit configs/indexes.json then retrain
+uv run python main.py train --config configs/indexes.json --epochs 100
 ```
 
 ### 3. Backtest again and compare
 ```bash
-uv run python main.py backtest VOLV-B.ST
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json
 uv run python main.py history --ticker VOLV-B.ST
 ```
 The `history` table now shows both runs side by side so you can see whether the change helped.

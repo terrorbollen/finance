@@ -15,10 +15,12 @@ def _trainer(
 ) -> WalkForwardTrainer:
     """Return a WalkForwardTrainer configured purely for window-generation tests."""
     return WalkForwardTrainer(
-        initial_train_days=initial_train_days,
-        validation_days=validation_days,
         sequence_length=20,
         prediction_horizons=[5],
+        buy_threshold=0.02,
+        sell_threshold=-0.02,
+        initial_train_days=initial_train_days,
+        validation_days=validation_days,
         purge_gap=purge_gap,
         embargo_gap=embargo_gap,
     )
@@ -120,11 +122,11 @@ class TestPurgeGap:
 
     def test_default_purge_gap_equals_max_prediction_horizon(self) -> None:
         # purge_gap defaults to max(prediction_horizons) to cover the longest label look-ahead
-        t = WalkForwardTrainer(prediction_horizons=[5, 10, 20])
+        t = WalkForwardTrainer(sequence_length=20, prediction_horizons=[5, 10, 20], buy_threshold=0.02, sell_threshold=-0.02)
         assert t.purge_gap == 20
 
     def test_explicit_purge_gap_overrides_default(self) -> None:
-        t = WalkForwardTrainer(prediction_horizons=[5, 10, 20], purge_gap=10)
+        t = WalkForwardTrainer(sequence_length=20, prediction_horizons=[5, 10, 20], buy_threshold=0.02, sell_threshold=-0.02, purge_gap=10)
         assert t.purge_gap == 10
 
 
@@ -134,13 +136,14 @@ class TestPurgeGap:
 
 
 class TestEmbargoGap:
-    def test_default_embargo_gap_equals_sequence_length(self) -> None:
-        sequence_length = 20
-        t = WalkForwardTrainer(sequence_length=sequence_length)
-        assert t.embargo_gap == sequence_length
+    def test_default_embargo_gap_is_zero(self) -> None:
+        # Default is 0: expanding-window walk-forward uses all historical data per fold.
+        # Pass embargo_gap=sequence_length explicitly if cross-validation-style embargo is needed.
+        t = WalkForwardTrainer(sequence_length=20, prediction_horizons=[5], buy_threshold=0.02, sell_threshold=-0.02)
+        assert t.embargo_gap == 0
 
     def test_explicit_embargo_gap_overrides_default(self) -> None:
-        t = WalkForwardTrainer(sequence_length=20, embargo_gap=5)
+        t = WalkForwardTrainer(sequence_length=20, prediction_horizons=[5], buy_threshold=0.02, sell_threshold=-0.02, embargo_gap=5)
         assert t.embargo_gap == 5
 
     def test_embargo_gap_advances_train_start(self) -> None:

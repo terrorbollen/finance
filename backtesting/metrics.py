@@ -10,12 +10,14 @@ from scipy import stats
 
 from backtesting.results import (
     ClassMetrics,
+    DirectionMetrics,
     HorizonMetrics,
     HorizonPrediction,
     MonteCarloResult,
     Signal,
     TradeRecord,
 )
+from models.direction import DIRECTION_TO_IDX as _SIGNAL_TO_IDX
 
 
 class TradingMetrics(TypedDict):
@@ -36,6 +38,10 @@ class TradingMetrics(TypedDict):
     win_rate_ci: tuple[float, float]
     net_return_ci: tuple[float, float]
     trades: list  # list[TradeRecord] — typed as list to avoid circular import
+    avg_win_pct: float
+    avg_loss_pct: float
+    profit_factor: float
+    max_consec_losses: int
 
 
 # Maximum per-trade slippage cost as a percentage (0.5%)
@@ -43,6 +49,9 @@ _MAX_SLIPPAGE_PCT = 0.5
 
 # Minimum trades needed for metrics to be considered reliable
 MIN_TRADES_FOR_RELIABILITY = 30
+
+# Trading days in a calendar year — used for annualisation
+TRADING_DAYS_PER_YEAR = 252
 
 
 class MetricsCalculator:
@@ -55,7 +64,7 @@ class MetricsCalculator:
         commission_pct: float = 0.001,
         slippage_factor: float = 0.0,
         leverage: float = 1.0,
-        enforce_position_cooldown: bool = False,
+        enforce_position_cooldown: bool = True,
     ):
         """
         Initialize metrics calculator.
@@ -131,6 +140,60 @@ class MetricsCalculator:
             **trading,
         )
 
+        # Per-direction P&L split
+        buy_preds = [
+            p for p in completed if p.predicted_signal == Signal.BUY and p.actual_price_change is not None
+        ]
+        sell_preds = [
+            p for p in completed if p.predicted_signal == Signal.SELL and p.actual_price_change is not None
+        ]
+        if len(buy_preds) >= 5:
+            bt = self._calculate_trading_metrics(buy_preds, horizon=horizon)
+            metrics.buy_trading = DirectionMetrics(
+                win_rate=bt["win_rate"],
+                net_total_return=bt["net_total_return"],
+                sharpe_ratio=bt["sharpe_ratio"],
+                trade_count=bt["trade_count"],
+            )
+        if len(sell_preds) >= 5:
+            st = self._calculate_trading_metrics(sell_preds, horizon=horizon)
+            metrics.sell_trading = DirectionMetrics(
+                win_rate=st["win_rate"],
+                net_total_return=st["net_total_return"],
+                sharpe_ratio=st["sharpe_ratio"],
+                trade_count=st["trade_count"],
+            )
+
+        # Confidence-stratified win rates
+        conf_buckets = [
+            ("30-40%", 0.30, 0.40),
+            ("40-50%", 0.40, 0.50),
+            ("50-60%", 0.50, 0.60),
+            ("60-70%", 0.60, 0.70),
+            ("70%+", 0.70, 1.01),
+        ]
+        all_trade_records = trading["trades"]
+        # Build a map from prediction_date to confidence for non-HOLD predictions
+        date_conf: dict = {}
+        for p in completed:
+            if p.predicted_signal != Signal.HOLD:
+                date_conf[p.prediction_date] = p.confidence
+
+        conf_win_rates: dict[str, float] = {}
+        conf_trade_counts: dict[str, int] = {}
+        for label, lo, hi in conf_buckets:
+            bucket_trades = [
+                t
+                for t in all_trade_records
+                if lo <= date_conf.get(t.date, -1) < hi
+            ]
+            if len(bucket_trades) >= 3:
+                wins = sum(1 for t in bucket_trades if t.net_pct > 0)
+                conf_win_rates[label] = wins / len(bucket_trades)
+                conf_trade_counts[label] = len(bucket_trades)
+        metrics.confidence_win_rates = conf_win_rates
+        metrics.confidence_trade_counts = conf_trade_counts
+
         # Additional validation diagnostics
         metrics.brier_score = self._calculate_brier_score(completed)
         metrics.ece = self._calculate_ece(calibration, completed)
@@ -140,11 +203,7 @@ class MetricsCalculator:
 
         # Monte Carlo simulation over trade-return permutations
         net_returns = [t.net_pct for t in trading["trades"]]
-        metrics.monte_carlo = self._run_monte_carlo(
-            net_returns=net_returns,
-            observed_total_return=trading["net_total_return"],
-            observed_sharpe=trading["sharpe_ratio"],
-        )
+        metrics.monte_carlo = self._run_monte_carlo(net_returns=net_returns)
 
         return metrics
 
@@ -337,6 +396,10 @@ class MetricsCalculator:
             "win_rate_ci": (0.0, 0.0),
             "net_return_ci": (0.0, 0.0),
             "trades": [],
+            "avg_win_pct": 0.0,
+            "avg_loss_pct": 0.0,
+            "profit_factor": 0.0,
+            "max_consec_losses": 0,
         }
         if not gross_returns:
             return empty
@@ -351,7 +414,7 @@ class MetricsCalculator:
         # Bootstrap 95% confidence intervals
         def _sharpe_fn(arr: np.ndarray) -> float:
             s = float(np.std(arr, ddof=1))
-            return float((np.mean(arr) / s) * np.sqrt(252)) if s > 1e-8 else 0.0
+            return float((np.mean(arr) / s) * np.sqrt(TRADING_DAYS_PER_YEAR)) if s > 1e-8 else 0.0
 
         sharpe_ci = self._bootstrap_ci(net_returns, _sharpe_fn)
         win_rate_ci = self._bootstrap_ci(
@@ -371,6 +434,25 @@ class MetricsCalculator:
             cumulative += ret
             equity_curve.append((dt, round(cumulative, 4)))
 
+        # Avg win / avg loss / profit factor / max consecutive losses
+        winning_returns = [r for r in net_returns if r > 0]
+        losing_returns = [r for r in net_returns if r <= 0]
+        avg_win_pct = float(np.mean(winning_returns)) if winning_returns else 0.0
+        avg_loss_pct = float(np.mean(losing_returns)) if losing_returns else 0.0
+        sum_wins = sum(winning_returns)
+        sum_losses = abs(sum(losing_returns))
+        profit_factor = sum_wins / sum_losses if sum_losses > 1e-10 else 0.0
+
+        # Max consecutive losses
+        max_consec_losses = 0
+        current_streak = 0
+        for r in net_returns:
+            if r <= 0:
+                current_streak += 1
+                max_consec_losses = max(max_consec_losses, current_streak)
+            else:
+                current_streak = 0
+
         return {
             "win_rate": wins / trade_count,
             "total_return": float(sum(gross_returns)),
@@ -387,6 +469,10 @@ class MetricsCalculator:
             "win_rate_ci": win_rate_ci,
             "net_return_ci": net_return_ci,
             "trades": trades_list,
+            "avg_win_pct": avg_win_pct,
+            "avg_loss_pct": avg_loss_pct,
+            "profit_factor": profit_factor,
+            "max_consec_losses": max_consec_losses,
         }
 
     def _bootstrap_ci(
@@ -406,18 +492,17 @@ class MetricsCalculator:
 
     def _calculate_brier_score(self, predictions: list[HorizonPrediction]) -> float:
         """Multi-class Brier score. Uses all_probs if available, else falls back to confidence."""
-        signal_to_idx = {Signal.BUY: 0, Signal.HOLD: 1, Signal.SELL: 2}
         total = 0.0
         n = 0
         for p in predictions:
             if p.actual_signal is None:
                 continue
-            actual_idx = signal_to_idx[p.actual_signal]
+            actual_idx = _SIGNAL_TO_IDX[p.actual_signal]
             if p.all_probs is not None:
                 probs = p.all_probs
             else:
                 # Fallback: confidence on predicted class, remainder split equally
-                pred_idx = signal_to_idx[p.predicted_signal]
+                pred_idx = _SIGNAL_TO_IDX[p.predicted_signal]
                 remainder = (1.0 - p.confidence) / 2.0
                 probs_list = [remainder, remainder, remainder]
                 probs_list[pred_idx] = p.confidence
@@ -460,10 +545,9 @@ class MetricsCalculator:
         if len(preds) < 10:
             return {}
 
-        signal_to_idx = {Signal.BUY: 0, Signal.HOLD: 1, Signal.SELL: 2}
         result: dict[Signal, float] = {}
         for signal in Signal:
-            idx = signal_to_idx[signal]
+            idx = _SIGNAL_TO_IDX[signal]
             y_true = [1 if p.actual_signal == signal else 0 for p in preds]
             if sum(y_true) == 0 or sum(y_true) == len(y_true):
                 continue
@@ -545,8 +629,7 @@ class MetricsCalculator:
         mean_r = float(np.mean(arr))
         std_r = float(np.std(arr, ddof=1))
 
-        bars_per_year = 252
-        ann_factor = np.sqrt(bars_per_year)
+        ann_factor = np.sqrt(TRADING_DAYS_PER_YEAR)
         sharpe = float((mean_r / std_r) * ann_factor) if std_r > 1e-8 else 0.0
 
         downside = arr[arr < 0]
@@ -566,8 +649,6 @@ class MetricsCalculator:
     def _run_monte_carlo(
         self,
         net_returns: list[float],
-        observed_total_return: float,
-        observed_sharpe: float,
         n_simulations: int = 1000,
     ) -> MonteCarloResult | None:
         """
@@ -594,27 +675,46 @@ class MetricsCalculator:
         for _ in range(n_simulations):
             shuffled = arr[rng.permutation(n)]
 
-            # Total return
-            sim_total_returns.append(float(np.sum(shuffled)))
+            # Compounded total return — order-independent but financially correct
+            sim_total_returns.append(float((np.prod(1.0 + shuffled / 100.0) - 1.0) * 100.0))
 
-            # Max drawdown
+            # Max drawdown — order-dependent (path matters)
             cum = np.cumsum(shuffled)
             running_max = np.maximum.accumulate(cum)
             sim_max_drawdowns.append(float(np.min(cum - running_max)))
 
-            # Sharpe ratio (annualised, per-trade)
-            mean_r = float(np.mean(shuffled))
-            std_r = float(np.std(shuffled, ddof=1))
-            sharpe = float((mean_r / std_r) * np.sqrt(252)) if std_r > 1e-8 else 0.0
+            # Path-based Sharpe: normalise each trade's P&L by running equity
+            # (running equity starts at 100 = initial capital base).
+            # This IS order-dependent: an early loss shrinks the capital base,
+            # making subsequent equal-dollar trades look like larger % moves.
+            equity_base = 100.0 + np.concatenate([[0.0], np.cumsum(shuffled[:-1])])
+            # Guard against equity going to zero or negative
+            equity_base = np.maximum(equity_base, 1.0)
+            path_returns = shuffled / equity_base
+            std_p = float(np.std(path_returns, ddof=1))
+            sharpe = float((np.mean(path_returns) / std_p) * np.sqrt(TRADING_DAYS_PER_YEAR)) if std_p > 1e-8 else 0.0
             sim_sharpes.append(sharpe)
 
         ret_arr = np.array(sim_total_returns)
         dd_arr = np.array(sim_max_drawdowns)
         sharpe_arr = np.array(sim_sharpes)
 
+        # Recompute observed values using the same formulas as the simulations
+        # so the percentile comparisons are apples-to-apples.
+        obs_compounded_return = float((np.prod(1.0 + arr / 100.0) - 1.0) * 100.0)
+        obs_equity_base = 100.0 + np.concatenate([[0.0], np.cumsum(arr[:-1])])
+        obs_equity_base = np.maximum(obs_equity_base, 1.0)
+        obs_path_returns = arr / obs_equity_base
+        obs_std_p = float(np.std(obs_path_returns, ddof=1))
+        obs_path_sharpe = (
+            float((np.mean(obs_path_returns) / obs_std_p) * np.sqrt(TRADING_DAYS_PER_YEAR))
+            if obs_std_p > 1e-8
+            else 0.0
+        )
+
         # Percentile rank of the observed value vs simulations (0–100)
-        obs_ret_pct = float(np.mean(ret_arr <= observed_total_return) * 100)
-        obs_sharpe_pct = float(np.mean(sharpe_arr <= observed_sharpe) * 100)
+        obs_ret_pct = float(np.mean(ret_arr <= obs_compounded_return) * 100)
+        obs_sharpe_pct = float(np.mean(sharpe_arr <= obs_path_sharpe) * 100)
 
         return MonteCarloResult(
             n_simulations=n_simulations,

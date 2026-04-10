@@ -1,0 +1,19 @@
+{
+  "tickers": [
+    "^STOXX50E",
+    "^GDAXI",
+    "^FCHI"
+  ],
+  "epochs": 100,
+  "batch_size": 32,
+  "sequence_length": 30,
+  "prediction_horizons": [5, 10, 20],
+  "buy_threshold": 0.02,
+  "sell_threshold": -0.02,
+  "train_ratio": 0.7,
+  "val_ratio": 0.15,
+  "focal_loss": true,
+  "commission": 0.0005,
+  "leverage": 1.0,
+  "slippage_factor": 0.05
+}

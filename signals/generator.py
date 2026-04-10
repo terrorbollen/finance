@@ -257,9 +257,8 @@ class SignalGenerator:
         # Fetch data
         df = self.fetcher.fetch(ticker)
 
-        # Add features (including cross-asset reference data)
-        ref_data = self.fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
-        engineer = FeatureEngineer(df, reference_data=ref_data)
+        # Add features
+        engineer = FeatureEngineer(df)
         df_features = engineer.add_all_features()
 
         # Use feature columns from training config if available

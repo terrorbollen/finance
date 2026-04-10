@@ -45,52 +45,52 @@ class Backtester:
 
     def __init__(
         self,
+        commission_pct: float,
+        slippage_factor: float,
+        leverage: float,
         model_path: str | None = None,
-        sequence_length: int = 20,
-        buy_threshold: float = 0.02,
-        sell_threshold: float = -0.02,
-        commission_pct: float = 0.001,
         strict_holdout: bool = True,
-        slippage_factor: float = 0.1,
-        leverage: float = 1.0,
-        enforce_position_cooldown: bool = False,
+        enforce_position_cooldown: bool = True,
         retrain_every: int | None = None,
         retrain_epochs: int = 20,
+        retrain_batch_size: int = 32,
     ):
         """
         Initialize the backtester.
 
         Args:
-            model_path: Path to trained model weights. Defaults to checkpoint.
-            sequence_length: Sequence length used during training
-            buy_threshold: Price change threshold for BUY signal
-            sell_threshold: Price change threshold for SELL signal
-            commission_pct: One-way commission as decimal (default 0.1%)
-            strict_holdout: If True, enforce that backtest start is on or after the
-                            holdout start date saved in the model config. Prevents
-                            evaluating the model on data it was trained or validated on.
+            commission_pct: One-way commission as decimal — must match the training config.
             slippage_factor: Scaling constant for volume-based slippage model.
                              slippage_pct = slippage_factor / sqrt(relative_volume),
                              capped at 0.5% per trade. Set to 0 to disable slippage.
-            leverage: Leverage multiplier applied to each trade (default 1.0 = no leverage).
+            leverage: Leverage multiplier applied to each trade.
+            model_path: Path to trained model weights. Defaults to checkpoint.
+            strict_holdout: If True, enforce that backtest start is on or after the
+                            holdout start date saved in the model config.
             enforce_position_cooldown: If True, after a non-HOLD trade skip the next
                                        horizon predictions to avoid overlapping positions.
             retrain_every: If set, retrain the model every N trading days during the
-                           backtest using all data available up to that point. Simulates
-                           periodic retraining in production. None disables retraining
-                           (default: use the initial model for the entire period).
+                           backtest. None disables retraining.
             retrain_epochs: Number of training epochs per retrain (default 20).
-                            Fewer than standard training for speed.
+            retrain_batch_size: Batch size used during periodic retrains. Should match
+                                the batch_size from the training config (default 32).
+
+        Note: sequence_length, buy_threshold, sell_threshold, and prediction_horizons
+        are not constructor parameters — they are always read from the saved model config
+        (signal_model_config.json) by _load_config(). The model config is the single
+        source of truth for these values.
         """
         self.model_path = model_path or ModelConfig.checkpoint_paths()["weights"]
-        self.sequence_length = sequence_length
-        self.buy_threshold = buy_threshold
-        self.sell_threshold = sell_threshold
         self.strict_holdout = strict_holdout
-        self.slippage_factor = slippage_factor
         self.enforce_position_cooldown = enforce_position_cooldown
         self.retrain_every = retrain_every
         self.retrain_epochs = retrain_epochs
+        self.retrain_batch_size = retrain_batch_size
+
+        # Stored so _load_config() can create MetricsCalculator with the correct values
+        self._commission_pct = commission_pct
+        self._slippage_factor = slippage_factor
+        self._leverage = leverage
 
         self.model: SignalModel | None = None
         self.feature_columns: list[str] | None = None
@@ -99,10 +99,14 @@ class Backtester:
         self.input_dim: int | None = None
         self.holdout_start_date: date | None = None
         self.prediction_horizons: list[int] | None = None
-
+        # These three are set by _load_config() from the saved model JSON.
+        # Placeholders here; _load_config() raises if the config file is missing.
+        self.sequence_length: int = 0
+        self.buy_threshold: float = 0.0
+        self.sell_threshold: float = 0.0
         self.metrics_calculator = MetricsCalculator(
-            buy_threshold=buy_threshold,
-            sell_threshold=sell_threshold,
+            buy_threshold=0.0,
+            sell_threshold=0.0,
             commission_pct=commission_pct,
             slippage_factor=slippage_factor,
             leverage=leverage,
@@ -112,27 +116,36 @@ class Backtester:
         self._load_config()
 
     def _load_config(self) -> None:
-        """Load and validate training configuration from file."""
+        """Load training configuration from the saved model config JSON.
+
+        This is the single source of truth for sequence_length, buy_threshold,
+        sell_threshold, and prediction_horizons. Raises if the file is missing —
+        a Backtester without a model config cannot produce meaningful results.
+        """
         config_path = self.model_path.replace(".weights.h5", "_config.json")
-        if os.path.exists(config_path):
-            cfg = ModelConfig.load(config_path)
-            self.feature_columns = cfg.feature_columns
-            self.feature_mean = cfg.feature_mean_array
-            self.feature_std = cfg.feature_std_array
-            self.sequence_length = cfg.sequence_length
-            self.input_dim = cfg.input_dim
-            self.holdout_start_date = cfg.holdout_start_date
-            self.buy_threshold = cfg.buy_threshold
-            self.sell_threshold = cfg.sell_threshold
-            self.prediction_horizons = cfg.prediction_horizons
-            self.metrics_calculator = MetricsCalculator(
-                buy_threshold=cfg.buy_threshold,
-                sell_threshold=cfg.sell_threshold,
-                commission_pct=self.metrics_calculator.commission_pct,
-                slippage_factor=self.metrics_calculator.slippage_factor,
-                leverage=self.metrics_calculator.leverage,
-                enforce_position_cooldown=getattr(self, "enforce_position_cooldown", False),
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"Model config not found at '{config_path}'. "
+                "Train a model first with: uv run python main.py train --config configs/indexes.json"
             )
+        cfg = ModelConfig.load(config_path)
+        self.feature_columns = cfg.feature_columns
+        self.feature_mean = cfg.feature_mean_array
+        self.feature_std = cfg.feature_std_array
+        self.sequence_length = cfg.sequence_length
+        self.input_dim = cfg.input_dim
+        self.holdout_start_date = cfg.holdout_start_date
+        self.buy_threshold = cfg.buy_threshold
+        self.sell_threshold = cfg.sell_threshold
+        self.prediction_horizons = cfg.prediction_horizons
+        self.metrics_calculator = MetricsCalculator(
+            buy_threshold=cfg.buy_threshold,
+            sell_threshold=cfg.sell_threshold,
+            commission_pct=self._commission_pct,
+            slippage_factor=self._slippage_factor,
+            leverage=self._leverage,
+            enforce_position_cooldown=self.enforce_position_cooldown,
+        )
 
     def _load_model(self, input_dim: int) -> None:
         """Load the trained model and warm up TF graph compilation."""
@@ -174,9 +187,8 @@ class Backtester:
         fetcher = StockDataFetcher(period=FETCH_PERIOD)
         df_raw = fetcher.fetch(ticker)
 
-        # Add features (including cross-asset reference data)
-        ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df_raw.index))
-        engineer = FeatureEngineer(df_raw, reference_data=ref_data)
+        # Add features
+        engineer = FeatureEngineer(df_raw)
         df = engineer.add_all_features()
 
         # Get feature columns
@@ -289,7 +301,7 @@ class Backtester:
                         f"\nRetraining model at {cutoff} (chunk {chunk_idx + 1}/{len(chunks)})...",
                         flush=True,
                     )
-                    self._retrain_model(df_raw, ref_data, cutoff)
+                    self._retrain_model(df_raw, cutoff)
 
                 # Recompute normalised features with current stats after any retrain.
                 feature_array_norm = _normalize(feature_array)
@@ -382,10 +394,7 @@ class Backtester:
         buy_hold_return = ((last_price / first_price) - 1) * 100
 
         # Calculate OMXS30 benchmark return over the same period.
-        # Pass the already-fetched ^OMX series from ref_data to avoid a
-        # redundant yfinance request at the end of every run() call.
-        omxs30_data = ref_data.get("omxs30")
-        benchmark_return = self._compute_benchmark_return(start_date, end_date, omxs30_data)
+        benchmark_return = self._compute_benchmark_return(start_date, end_date)
 
         # Calculate metrics per horizon
         horizon_metrics = {}
@@ -419,7 +428,6 @@ class Backtester:
     def _retrain_model(
         self,
         df_raw: pd.DataFrame,
-        ref_data: dict[str, pd.DataFrame],
         cutoff_date: date,
     ) -> None:
         """Retrain the model on all raw data strictly before cutoff_date.
@@ -430,7 +438,6 @@ class Backtester:
 
         Args:
             df_raw: Full raw OHLCV DataFrame for the ticker.
-            ref_data: Cross-asset reference data (OMXS30, FX rates, etc.).
             cutoff_date: Only rows strictly before this date are used.
         """
         from tensorflow import keras  # noqa: PLC0415
@@ -456,7 +463,7 @@ class Backtester:
             sell_threshold=self.sell_threshold,
         )
 
-        features, labels_list, price_changes = wf.prepare_data(df_cut, reference_data=ref_data)
+        features, labels_list, price_changes = wf.prepare_data(df_cut)
 
         # Normalize using this window's data only (invariant: no look-ahead)
         feature_mean = np.nanmean(features, axis=0)
@@ -490,7 +497,7 @@ class Backtester:
             X,
             y_dict,
             epochs=self.retrain_epochs,
-            batch_size=32,
+            batch_size=self.retrain_batch_size,
             callbacks=[keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True)],
             verbose=0,
         )

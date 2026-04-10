@@ -73,7 +73,6 @@ class ModelTrainer:
     def prepare_data(
         self,
         df: pd.DataFrame,
-        reference_data: dict[str, pd.DataFrame] | None = None,
     ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray, pd.DatetimeIndex]:
         """
         Prepare features and labels from raw price data.
@@ -83,13 +82,12 @@ class ModelTrainer:
 
         Args:
             df: DataFrame with OHLCV data
-            reference_data: Optional cross-asset reference data (unused, kept for compat).
 
         Returns:
             Tuple of (features, labels_list, price_changes, date_index)
             - labels_list: one label array per horizon in self.prediction_horizons
         """
-        engineer = FeatureEngineer(df, reference_data=reference_data)
+        engineer = FeatureEngineer(df)
         df_features = engineer.add_all_features()
         self.feature_columns = engineer.get_feature_columns()
 
@@ -209,10 +207,7 @@ class ModelTrainer:
         for ticker in tickers:
             try:
                 df = fetcher.fetch(ticker)
-                ref_data = fetcher.fetch_cross_asset_data(pd.DatetimeIndex(df.index))
-                features, labels_list, prices, dates = self.prepare_data(
-                    df, reference_data=ref_data
-                )
+                features, labels_list, prices, dates = self.prepare_data(df)
             except Exception as e:
                 print(f"Error loading {ticker}: {e}")
                 continue

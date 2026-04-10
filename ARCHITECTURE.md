@@ -12,11 +12,9 @@ There are two separate pipelines that share the same data preparation steps but 
                         ┌─────────────────┐
                         │ StockDataFetcher │  yfinance → OHLCV DataFrame (10y history)
                         └────────┬────────┘
-                                 │  + fetch_cross_asset_data() [concurrent]
-                                 │  OMXS30, USD/SEK, EUR/SEK, VIX, VSTOXX, Brent, 10Y rates
                                  ▼
                         ┌─────────────────┐
-                        │ FeatureEngineer │  17 technical + cross-asset + calendar features
+                        │ FeatureEngineer │  8 technical indicators (scale-independent)
                         └────────┬────────┘
                                  │  DataFrame: OHLCV + feature columns (all scale-independent)
                                  │
@@ -66,23 +64,11 @@ There are two separate pipelines that share the same data preparation steps but 
 `StockDataFetcher.fetch(ticker)` returns a DataFrame with a `DatetimeIndex` and columns:
 `open`, `high`, `low`, `close`, `volume`
 
-`fetch_cross_asset_data(align_to)` fetches 7 reference series **concurrently** using a `ThreadPoolExecutor`:
-
-| Key | Ticker | Purpose |
-|---|---|---|
-| `omxs30` | `^OMX` | Swedish benchmark index |
-| `usdsek` | `USDSEK=X` | USD/SEK FX rate |
-| `eursek` | `EURSEK=X` | EUR/SEK FX rate |
-| `vix` | `^VIX` | Global fear gauge |
-| `vstoxx` | `^V2TX` | European volatility index |
-| `oil` | `BZ=F` | Brent crude oil |
-| `rates` | `^TNX` | US 10Y Treasury yield |
-
-All reference series are forward-filled, back-filled, and zero-padded to match the primary stock's `DatetimeIndex`. Missing data never propagates NaNs downstream.
+`fetch_cross_asset_data(align_to)` exists in the fetcher but is no longer used by the feature pipeline — cross-asset features (VIX, VSTOXX, macro, calendar) were trialled and removed because they offered no validated lift. See CONTRIBUTIONS.md for the full rationale.
 
 ### 2. Feature Engineering — `data/features.py`
 
-`FeatureEngineer(df, reference_data).add_all_features()` appends 17 columns to the DataFrame and drops NaN rows (from rolling window warm-up).
+`FeatureEngineer(df).add_all_features()` appends 8 columns to the DataFrame and drops NaN rows (from rolling window warm-up). The canonical ordered list of feature column names is exported as `FEATURE_COLUMNS` from `data/features.py` — import this constant instead of hardcoding the list at call sites.
 
 **Important:** All features are scale-independent — ratios, percentages, or bounded indicators. The model never sees raw prices. This makes the model generalizable across stocks with very different price levels.
 
@@ -98,21 +84,14 @@ All reference series are forward-filled, back-filled, and zero-padded to match t
 | `bb_position` | `_add_bb_position(20)` | Position within Bollinger Bands, 0–1 |
 | `volume_ratio` | `_add_volume_ratio(20)` | Volume / 20-day avg, clipped at 10x |
 | `adx_14` | `_add_adx(14)` | ADX(14) trend strength, 0–100 (Wilder smoothing) |
-| `vix_level` | `_add_volatility_features()` | VIX normalised by 252-day rolling mean |
-| `vix_1d_change` | `_add_volatility_features()` | Daily % change in VIX |
-| `vix_stock_corr` | `_add_volatility_features()` | 20-day rolling corr: stock returns vs VIX changes |
-| `vstoxx_level` | `_add_volatility_features()` | VSTOXX normalised by 252-day rolling mean |
-| `vstoxx_1d_change` | `_add_volatility_features()` | Daily % change in VSTOXX |
-| `oil_level` | `_add_macro_features()` | Brent normalised by 252-day rolling mean |
-| `oil_1d_change` | `_add_macro_features()` | Daily % change in Brent crude |
-| `rate_level` | `_add_macro_features()` | US 10Y yield in % (e.g. 4.5 = 4.5%) |
-| `rate_1d_change` | `_add_macro_features()` | Daily change in 10Y yield (pp) |
 
-All cross-asset features fall back gracefully to neutral values (0 or 1) when data is unavailable so `dropna()` never removes rows due to missing reference data.
+The feature set is intentionally kept small (8 indicators chosen for low mutual redundancy). Cross-asset, macro, VIX/VSTOXX, and calendar features were trialled and removed — see CONTRIBUTIONS.md.
 
-### 3. The Config File — `checkpoints/signal_model_config.json`
+### 3. Per-Training Config and Model Config
 
-`ModelConfig` (a Pydantic model in `models/config.py`) is the contract between training and inference. It is written by `ModelTrainer` and read by `SignalGenerator` and `Backtester`. Pydantic validation raises a clear error at load time if any field is malformed or inconsistent.
+**Per-training config files** (`configs/stocks.json`, `configs/indexes.json`) are the single source of truth for all hyperparameters. Pass `--config FILE` to every command that touches the pipeline (`train`, `backtest`, `portfolio`, `calibrate`) — it is required; there are no hardcoded fallbacks. The config filename determines the checkpoint directory: `configs/indexes.json` → `checkpoints/indexes/`. CLI args always override config values. Compare runs via `history` — versioning configs is not necessary.
+
+**`ModelConfig`** (a Pydantic model in `models/config.py`) is the contract between training and inference. It is written by `ModelTrainer` and read by `SignalGenerator` and `Backtester`. Pydantic validation raises a clear error at load time if any field is malformed or inconsistent. All fields are required — there are no defaults.
 
 Named model checkpoints live under `checkpoints/<name>/` (via `ModelConfig.checkpoint_paths(name)`). The default (unnamed) checkpoint lives under `checkpoints/`.
 
@@ -121,14 +100,14 @@ Named model checkpoints live under `checkpoints/<name>/` (via `ModelConfig.check
 | `feature_columns` | `list[str]` | Ordered list of feature column names the model was trained on |
 | `feature_mean` | `list[float]` | Per-feature mean computed on the **training split only** |
 | `feature_std` | `list[float]` | Per-feature std computed on the **training split only** |
-| `sequence_length` | `int` | LSTM/GRU lookback window in bars (default 20) |
+| `sequence_length` | `int` | LSTM/GRU lookback window in bars |
 | `input_dim` | `int` | Number of features (= `len(feature_columns)`) |
 | `interval` | `str` | Data interval (always `"1d"`) |
 | `training_fetch_date` | `date` | Date training data was fetched |
 | `holdout_start_date` | `date` | Earliest date the backtester is allowed to evaluate |
-| `buy_threshold` | `float` | Min % gain to label Buy (default 0.015) |
-| `sell_threshold` | `float` | Max % loss to label Sell (default -0.015) |
-| `prediction_horizons` | `list[int]` | Prediction horizons in trading days (default [5, 10, 20]) |
+| `buy_threshold` | `float` | Min % gain to label Buy |
+| `sell_threshold` | `float` | Max % loss to label Sell |
+| `prediction_horizons` | `list[int]` | Prediction horizons in trading days |
 
 **Adding a new feature requires retraining** — the config will be stale and `input_dim` will not match the model weights.
 
@@ -172,7 +151,7 @@ Loss: balanced focal loss (when `use_focal_loss=True`) with per-class alpha weig
 
 **Consensus at inference**: `predict()` calls `predict_per_horizon()` then applies majority vote — a BUY or SELL signal requires ≥ `ceil(n_horizons/2 + 0.5)` horizons to agree; otherwise HOLD is emitted.
 
-Class encoding: `BUY=0, HOLD=1, SELL=2` (defined in `models/direction.py`). This mapping is hardcoded at training time. Reference `BUY_IDX`, `HOLD_IDX`, `SELL_IDX` from `models/direction.py` — never hardcode 0/1/2.
+Class encoding: `BUY=0, HOLD=1, SELL=2` (defined in `models/direction.py`). This mapping is fixed at training time. Reference `BUY_IDX`, `HOLD_IDX`, `SELL_IDX`, and `DIRECTION_TO_IDX` from `models/direction.py` — never hardcode 0/1/2.
 
 ### 7. Normalization at Inference Time
 
@@ -227,7 +206,7 @@ Key features:
 - One position per ticker at a time (no pyramiding)
 - Commission applied on entry and exit
 
-**`MetricsCalculator`** computes `HorizonMetrics` for each prediction horizon:
+**`MetricsCalculator`** computes `HorizonMetrics` for each prediction horizon. The annualisation constant `TRADING_DAYS_PER_YEAR = 252` is exported from this module — import it rather than hardcoding 252 elsewhere.
 - Signal accuracy, per-class precision/recall/F1 (via `ClassMetrics`)
 - Sharpe ratio, Sortino ratio, max drawdown, Calmar ratio
 - Win rate with binomial p-value and Benjamini-Hochberg FDR correction
@@ -250,7 +229,7 @@ See [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) for how to interpret th
 
 `ModelTrainer.train(tickers, epochs, ...)` orchestrates the full training run:
 
-1. Fetch OHLCV + cross-asset data for each ticker (10y history)
+1. Fetch OHLCV data for each ticker (10y history)
 2. `prepare_data()` per ticker → features, labels, price changes, date index
 3. Apply holdout cutoff (discard data ≥ `holdout_date`)
 4. Normalize: compute mean/std on each ticker's training split only, then pool — avoids cross-ticker leakage (M6 fix)
@@ -263,7 +242,7 @@ See [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) for how to interpret th
 
 `HyperparameterTuner` in the same file runs random search over `sequence_length`, `buy_threshold`, `batch_size`, and `use_focal_loss`, with each trial logged as a nested MLflow run.
 
-`WalkForwardTrainer` (`models/walk_forward.py`) implements expanding-window cross-validation with configurable purge and embargo gaps.
+`WalkForwardTrainer` (`models/walk_forward.py`) implements expanding-window cross-validation with configurable purge and embargo gaps. The training hyperparameters (`sequence_length`, `prediction_horizons`, `buy_threshold`, `sell_threshold`) are required parameters — they must be passed explicitly from the config file. Walk-forward methodology parameters (`initial_train_days`, `validation_days`, `step_days`, `purge_gap`, `embargo_gap`) have defaults.
 
 ---
 

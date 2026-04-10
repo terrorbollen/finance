@@ -36,6 +36,7 @@ Multi-agent task board and improvement log. Every agent reads this before starti
 
 | # | Task | Scope | Claimed by | Status |
 |---|------|-------|------------|--------|
+| B19 | **Monte Carlo simulation is broken — all permutations produce identical total return and Sharpe.** `_run_monte_carlo()` in `backtesting/metrics.py` computes total return as `np.sum(shuffled)` and Sharpe as `mean(shuffled) / std(shuffled)`. Both are order-independent statistics — shuffling trade order has no effect on them, so all 1 000 permutations always yield the same values. The output (`mean == p5 == p95`) makes the simulation useless as a path-dependency test. Fix: replace `np.sum(shuffled)` with compounded return `(np.prod(1 + shuffled / 100) - 1) * 100`; replace the per-trade mean/std Sharpe with a path-based Sharpe computed over the cumulative equity curve of each permutation (so ordering actually affects the result). Add a unit test asserting that p5 < mean < p95 when at least two distinct return values exist. | `backtesting/metrics.py`, `tests/test_metrics.py` | — | done |
 
 ### Risk Management (`signals/`)
 

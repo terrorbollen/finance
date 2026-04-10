@@ -368,7 +368,7 @@ class TestWalkForwardRetrain:
     def _patch_retrain(self, monkeypatch, bt: Backtester) -> list:
         """Replace _retrain_model with a recorder that returns immediately."""
         calls: list = []
-        monkeypatch.setattr(bt, "_retrain_model", lambda df_raw, ref_data, d: calls.append(d))
+        monkeypatch.setattr(bt, "_retrain_model", lambda df_raw, d: calls.append(d))
         return calls
 
     def test_no_retrain_when_disabled(self, monkeypatch):

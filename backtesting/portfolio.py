@@ -191,6 +191,7 @@ class PortfolioBacktester:
         self,
         model_name: str | None = None,
         commission_pct: float = 0.001,
+        slippage_factor: float = 0.1,
         initial_capital: float = 10_000.0,
         max_positions: int | None = None,
         strict_holdout: bool = True,
@@ -204,6 +205,7 @@ class PortfolioBacktester:
     ):
         self.model_name = model_name
         self.commission_pct = commission_pct
+        self.slippage_factor = slippage_factor
         self.initial_capital = initial_capital
         self.max_positions = max_positions
         self.strict_holdout = strict_holdout
@@ -235,7 +237,13 @@ class PortfolioBacktester:
         prices_by_ticker: dict[str, dict[date, float]] = {}
 
         for ticker in tickers:
-            bt = Backtester(model_path=paths["weights"], strict_holdout=self.strict_holdout)
+            bt = Backtester(
+                commission_pct=self.commission_pct,
+                slippage_factor=self.slippage_factor,
+                leverage=self.leverage,
+                model_path=paths["weights"],
+                strict_holdout=self.strict_holdout,
+            )
             result = bt.run(
                 ticker=ticker,
                 start_date=start_date,

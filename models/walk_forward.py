@@ -85,13 +85,13 @@ class WalkForwardTrainer:
 
     def __init__(
         self,
+        sequence_length: int,
+        prediction_horizons: list[int],
+        buy_threshold: float,
+        sell_threshold: float,
         initial_train_days: int = 500,
         validation_days: int = 60,
         step_days: int = 60,
-        sequence_length: int = 20,
-        prediction_horizons: list[int] | None = None,
-        buy_threshold: float = 0.015,
-        sell_threshold: float = -0.015,
         purge_gap: int | None = None,
         embargo_gap: int | None = None,
     ):
@@ -99,14 +99,13 @@ class WalkForwardTrainer:
         Initialize walk-forward trainer.
 
         Args:
+            sequence_length: LSTM sequence length — must match the training config.
+            prediction_horizons: Days ahead to predict — must match the training config.
+            buy_threshold: Price change threshold for BUY label — must match the training config.
+            sell_threshold: Price change threshold for SELL label — must match the training config.
             initial_train_days: Number of days for initial training window (~2 years)
             validation_days: Size of validation window (~3 months)
             step_days: How many days to step forward each iteration
-            sequence_length: LSTM sequence length
-            prediction_horizons: Days ahead to predict (default [5, 10, 20]).
-                                 Must match the horizons used in standard training.
-            buy_threshold: Price change threshold for BUY label
-            sell_threshold: Price change threshold for SELL label
             purge_gap: Bars to skip between end of training and start of validation to
                 prevent label leakage from overlapping sequences.  Defaults to
                 ``max(prediction_horizons)`` (longest horizon label look-ahead).
@@ -124,9 +123,12 @@ class WalkForwardTrainer:
         )
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
-        # Default purge_gap to longest horizon; embargo_gap to sequence_length
+        # Default purge_gap to longest horizon.
+        # embargo_gap defaults to 0: for expanding-window walk-forward we want all
+        # historical data in every fold. Embargo is appropriate for cross-validation
+        # but shrinks training windows to near-zero in walk-forward mode.
         self.purge_gap: int = max(self.prediction_horizons) if purge_gap is None else purge_gap
-        self.embargo_gap: int = sequence_length if embargo_gap is None else embargo_gap
+        self.embargo_gap: int = 0 if embargo_gap is None else embargo_gap
 
         self.feature_columns: list[str] = []
         self.feature_mean: np.ndarray | None = None
@@ -135,20 +137,17 @@ class WalkForwardTrainer:
     def prepare_data(
         self,
         df: pd.DataFrame,
-        reference_data: dict[str, "pd.DataFrame"] | None = None,
     ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
         """Prepare features and labels from raw price data.
 
         Args:
             df: Raw OHLCV DataFrame for one ticker.
-            reference_data: Optional cross-asset data passed to FeatureEngineer
-                (OMXS30, USD/SEK, EUR/SEK). If None, cross-asset features are omitted.
 
         Returns:
             Tuple of (features, labels_list, price_changes) where labels_list
             contains one label array per horizon in self.prediction_horizons.
         """
-        engineer = FeatureEngineer(df, reference_data=reference_data)
+        engineer = FeatureEngineer(df)
         df_features = engineer.add_all_features()
 
         self.feature_columns = engineer.get_feature_columns()
@@ -346,7 +345,7 @@ class WalkForwardTrainer:
         if track_with_mlflow:
             setup_mlflow()
         # Fetch and combine data
-        fetcher = StockDataFetcher(period="5y")
+        fetcher = StockDataFetcher(period="max")
         all_features: list[np.ndarray] = []
         all_labels: list[list[np.ndarray]] = []  # [ticker][horizon_idx] -> array
         all_prices: list[np.ndarray] = []

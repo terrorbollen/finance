@@ -4,18 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.features import FeatureEngineer
+from data.features import FEATURE_COLUMNS, FeatureEngineer
 
-EXPECTED_FEATURES = [
-    "rsi",
-    "macd_histogram",
-    "momentum_10",
-    "returns",
-    "atr",
-    "bb_position",
-    "volume_ratio",
-    "adx_14",
-]
+EXPECTED_FEATURES = FEATURE_COLUMNS
 
 
 @pytest.fixture

@@ -31,9 +31,9 @@ class ModelConfig(BaseModel):
     interval: str = "1d"
     training_fetch_date: date
     holdout_start_date: date
-    buy_threshold: float = 0.015
-    sell_threshold: float = -0.015
-    prediction_horizons: list[int] = [5, 10, 20]
+    buy_threshold: float
+    sell_threshold: float
+    prediction_horizons: list[int]
 
     @field_validator("feature_std")
     @classmethod

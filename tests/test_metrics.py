@@ -370,3 +370,232 @@ class TestCalculateHorizonMetrics:
         assert m.win_rate > 0.0
         assert m.price_mae > 0.0
         assert Signal.BUY in m.class_metrics
+
+
+# ---------------------------------------------------------------------------
+# Profit factor
+# ---------------------------------------------------------------------------
+
+
+class TestProfitFactor:
+    def test_profit_factor_known_values(self):
+        # Wins: 3.0, 2.0 → sum=5.0; Losses: -1.0 → sum=-1.0; PF=5.0
+        preds = [
+            _pred(Signal.BUY, Signal.BUY, actual_change=3.0),
+            _pred(Signal.BUY, Signal.BUY, actual_change=2.0),
+            _pred(Signal.BUY, Signal.SELL, actual_change=-1.0),
+        ]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["profit_factor"] == pytest.approx(5.0)
+
+    def test_profit_factor_zero_when_no_losses(self):
+        preds = [
+            _pred(Signal.BUY, Signal.BUY, actual_change=2.0),
+            _pred(Signal.BUY, Signal.BUY, actual_change=1.0),
+        ]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["profit_factor"] == 0.0
+
+    def test_profit_factor_zero_when_no_wins(self):
+        preds = [
+            _pred(Signal.BUY, Signal.SELL, actual_change=-1.0),
+            _pred(Signal.BUY, Signal.SELL, actual_change=-2.0),
+        ]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["profit_factor"] == 0.0
+
+    def test_avg_win_avg_loss(self):
+        preds = [
+            _pred(Signal.BUY, Signal.BUY, actual_change=4.0),
+            _pred(Signal.BUY, Signal.BUY, actual_change=2.0),
+            _pred(Signal.BUY, Signal.SELL, actual_change=-3.0),
+            _pred(Signal.BUY, Signal.SELL, actual_change=-1.0),
+        ]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["avg_win_pct"] == pytest.approx(3.0)  # mean(4, 2)
+        assert result["avg_loss_pct"] == pytest.approx(-2.0)  # mean(-3, -1)
+
+
+# ---------------------------------------------------------------------------
+# Max consecutive losses
+# ---------------------------------------------------------------------------
+
+
+class TestMaxConsecLosses:
+    def test_no_losses(self):
+        preds = [_pred(Signal.BUY, Signal.BUY, actual_change=1.0) for _ in range(4)]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["max_consec_losses"] == 0
+
+    def test_single_streak(self):
+        # W W L L L W → max streak = 3
+        # BUY + positive change = win; BUY + negative change = loss
+        returns = [1.0, 1.0, -1.0, -1.0, -1.0, 1.0]
+        preds = []
+        for r in returns:
+            preds.append(_pred(Signal.BUY, Signal.BUY, actual_change=r))
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["max_consec_losses"] == 3
+
+    def test_two_streaks_returns_max(self):
+        # L L W L L L W → streaks 2, 3 → max=3
+        returns = [-1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0]
+        preds = []
+        for r in returns:
+            preds.append(_pred(Signal.BUY, Signal.BUY, actual_change=r))
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["max_consec_losses"] == 3
+
+    def test_all_losses(self):
+        # BUY with actual_change=-1.0 → gross = -1.0 → loss
+        preds = [_pred(Signal.BUY, Signal.SELL, actual_change=-1.0) for _ in range(5)]
+        result = _calc()._calculate_trading_metrics(preds)
+        assert result["max_consec_losses"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Confidence bucketing (confidence_win_rates / confidence_trade_counts)
+# ---------------------------------------------------------------------------
+
+
+def _pred_with_date(
+    predicted: Signal,
+    actual: Signal,
+    actual_change: float,
+    confidence: float,
+    pred_date: date,
+) -> HorizonPrediction:
+    p = HorizonPrediction(
+        prediction_date=pred_date,
+        horizon_days=5,
+        predicted_signal=predicted,
+        confidence=confidence,
+        predicted_price_change=0.0,
+    )
+    p.actual_signal = actual
+    p.actual_price_change = actual_change
+    return p
+
+
+class TestConfidenceBucketing:
+    def test_bucket_populated_when_enough_trades(self):
+        # 4 BUY trades in 50-60% bucket, 3 wins — horizon=1 so cooldown doesn't apply
+        dates = [date(2024, 1, d) for d in range(1, 5)]
+        preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 1.0, 0.55, dates[i])
+            for i in range(3)
+        ] + [
+            _pred_with_date(Signal.BUY, Signal.SELL, -1.0, 0.55, dates[3]),
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert "50-60%" in m.confidence_win_rates
+        assert m.confidence_win_rates["50-60%"] == pytest.approx(0.75)
+        assert m.confidence_trade_counts["50-60%"] == 4
+
+    def test_bucket_excluded_when_fewer_than_3_trades(self):
+        # Only 2 trades in 60-70% bucket
+        preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 1.0, 0.65, date(2024, 1, d))
+            for d in range(1, 3)
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert "60-70%" not in m.confidence_win_rates
+
+    def test_high_confidence_bucket(self):
+        # 5 trades in 70%+ bucket, 5 wins — horizon=1 so cooldown doesn't apply
+        preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 1.0, 0.80, date(2024, 1, d))
+            for d in range(1, 6)
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert "70%+" in m.confidence_win_rates
+        assert m.confidence_win_rates["70%+"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Per-direction P&L split (buy_trading / sell_trading)
+# ---------------------------------------------------------------------------
+
+
+class TestPerDirectionSplit:
+    def test_buy_trading_populated_with_5_buy_trades(self):
+        # 5 BUY trades — horizon=1 so cooldown doesn't apply (tests direction-split logic)
+        preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 2.0, 0.7, date(2024, 1, d))
+            for d in range(1, 6)
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert m.buy_trading is not None
+        assert m.buy_trading.trade_count == 5
+        assert m.buy_trading.win_rate == pytest.approx(1.0)
+
+    def test_sell_trading_populated_with_5_sell_trades(self):
+        preds = [
+            _pred_with_date(Signal.SELL, Signal.SELL, -2.0, 0.7, date(2024, 1, d))
+            for d in range(1, 6)
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert m.sell_trading is not None
+        assert m.sell_trading.trade_count == 5
+
+    def test_buy_trading_none_when_fewer_than_5_trades(self):
+        preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 2.0, 0.7, date(2024, 1, d))
+            for d in range(1, 5)  # only 4 trades
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert m.buy_trading is None
+
+    def test_sell_trading_none_when_fewer_than_5_trades(self):
+        preds = [
+            _pred_with_date(Signal.SELL, Signal.SELL, -2.0, 0.7, date(2024, 1, d))
+            for d in range(1, 4)  # only 3 trades
+        ]
+        m = _calc().calculate_horizon_metrics(preds, horizon=1)
+        assert m.sell_trading is None
+
+    def test_mixed_buy_and_sell(self):
+        buy_preds = [
+            _pred_with_date(Signal.BUY, Signal.BUY, 2.0, 0.7, date(2024, 1, d))
+            for d in range(1, 6)
+        ]
+        sell_preds = [
+            _pred_with_date(Signal.SELL, Signal.SELL, -2.0, 0.7, date(2024, 2, d))
+            for d in range(1, 8)
+        ]
+        m = _calc().calculate_horizon_metrics(buy_preds + sell_preds, horizon=1)
+        assert m.buy_trading is not None
+        assert m.sell_trading is not None
+        assert m.buy_trading.trade_count == 5
+        assert m.sell_trading.trade_count == 7
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo simulation
+# ---------------------------------------------------------------------------
+
+
+class TestMonteCarlo:
+    def test_sharpe_varies_across_permutations(self):
+        """p5 < mean < p95 when returns are not all identical — proves ordering matters."""
+        calc = _calc()
+        # Mix of wins and losses so different orderings produce different equity paths
+        net_returns = [5.0, -3.0, 4.0, -2.0, 6.0, -1.0, 3.0, -4.0, 2.0, 5.0]
+        result = calc._run_monte_carlo(net_returns)
+        assert result is not None
+        assert result.p5_sharpe < result.mean_sharpe < result.p95_sharpe
+
+    def test_returns_none_for_fewer_than_5_trades(self):
+        result = _calc()._run_monte_carlo([1.0, 2.0, 3.0, 4.0])
+        assert result is None
+
+    def test_compounded_total_return_used(self):
+        """Total return should use compounding, not linear sum."""
+        calc = _calc()
+        # With compounding, total return != simple sum for large returns
+        # [+50%, -50%] compounded = (1.5 * 0.5 - 1) * 100 = -25%, not 0%
+        net_returns = [50.0, -50.0, 50.0, -50.0, 50.0]
+        result = calc._run_monte_carlo(net_returns)
+        assert result is not None
+        # Compounded mean should be negative (each +50/-50 pair loses ~25%)
+        assert result.mean_total_return < 0.0

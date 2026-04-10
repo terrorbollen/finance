@@ -195,25 +195,35 @@ class TestThresholdLoading:
             holdout_start_date=date(2024, 6, 1),
             buy_threshold=buy_threshold,
             sell_threshold=sell_threshold,
+            prediction_horizons=[5, 10, 20],
         )
         cfg.save(path)
+
+    def _bt_via_new(self, weights: str) -> Backtester:
+        """Minimal Backtester via __new__ — sets all attrs _load_config() depends on."""
+        bt = Backtester.__new__(Backtester)
+        bt.model_path = weights
+        bt.buy_threshold = 0.0
+        bt.sell_threshold = 0.0
+        bt.sequence_length = 0
+        bt.feature_columns = None
+        bt.feature_mean = None
+        bt.feature_std = None
+        bt.input_dim = None
+        bt.holdout_start_date = None
+        bt._commission_pct = 0.001
+        bt._slippage_factor = 0.1
+        bt._leverage = 1.0
+        bt.enforce_position_cooldown = False
+        bt.metrics_calculator = MetricsCalculator()
+        return bt
 
     def test_thresholds_loaded_from_config(self, tmp_path):
         weights = str(tmp_path / "signal_model.weights.h5")
         config = weights.replace(".weights.h5", "_config.json")
         self._write_config(config, buy_threshold=0.03, sell_threshold=-0.03)
 
-        bt = Backtester.__new__(Backtester)
-        bt.model_path = weights
-        bt.buy_threshold = 0.02  # default — should be overridden
-        bt.sell_threshold = -0.02
-        bt.metrics_calculator = MetricsCalculator()
-        bt.sequence_length = 20
-        bt.feature_columns = None
-        bt.feature_mean = None
-        bt.feature_std = None
-        bt.input_dim = None
-        bt.holdout_start_date = None
+        bt = self._bt_via_new(weights)
         bt._load_config()
 
         assert bt.buy_threshold == pytest.approx(0.03)
@@ -224,17 +234,7 @@ class TestThresholdLoading:
         config = weights.replace(".weights.h5", "_config.json")
         self._write_config(config, buy_threshold=0.025, sell_threshold=-0.025)
 
-        bt = Backtester.__new__(Backtester)
-        bt.model_path = weights
-        bt.buy_threshold = 0.02
-        bt.sell_threshold = -0.02
-        bt.metrics_calculator = MetricsCalculator()
-        bt.sequence_length = 20
-        bt.feature_columns = None
-        bt.feature_mean = None
-        bt.feature_std = None
-        bt.input_dim = None
-        bt.holdout_start_date = None
+        bt = self._bt_via_new(weights)
         bt._load_config()
 
         assert bt.metrics_calculator.buy_threshold == pytest.approx(0.025)

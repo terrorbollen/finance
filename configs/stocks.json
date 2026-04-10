@@ -1,0 +1,26 @@
+{
+  "tickers": [
+    "VOLV-B.ST",
+    "ERIC-B.ST",
+    "HM-B.ST",
+    "SEB-A.ST",
+    "ATCO-A.ST",
+    "INVE-B.ST",
+    "NDA-SE.ST",
+    "SWED-A.ST",
+    "SAND.ST",
+    "ABB.ST"
+  ],
+  "epochs": 100,
+  "batch_size": 32,
+  "sequence_length": 20,
+  "prediction_horizons": [5, 10, 20],
+  "buy_threshold": 0.02,
+  "sell_threshold": -0.02,
+  "train_ratio": 0.7,
+  "val_ratio": 0.15,
+  "focal_loss": true,
+  "commission": 0.001,
+  "leverage": 1.0,
+  "slippage_factor": 0.1
+}

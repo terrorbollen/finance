@@ -3,6 +3,19 @@
 import numpy as np
 import pandas as pd
 
+#: Canonical ordered list of feature columns produced by FeatureEngineer.
+#: Import this constant instead of hardcoding the list at each call site.
+FEATURE_COLUMNS: list[str] = [
+    "rsi",
+    "macd_histogram",
+    "momentum_10",
+    "returns",
+    "atr",
+    "bb_position",
+    "volume_ratio",
+    "adx_14",
+]
+
 
 class FeatureEngineer:
     """Calculates technical indicators and features for ML models.

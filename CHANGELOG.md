@@ -4,6 +4,36 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-04-09 (latest)
+
+### B19: Fixed Monte Carlo simulation — permutations now produce distinct results
+
+**Root cause:** `_run_monte_carlo()` used `np.sum(shuffled)` for total return and `mean/std(shuffled)` for Sharpe — both commutative operations unaffected by trade ordering. All 1000 permutations produced identical values, making the simulation useless.
+
+**Fix:** Total return now uses compounded return `(np.prod(1 + r/100) - 1) * 100` (financially correct). Sharpe is now computed as a path-based metric: each trade's P&L is divided by the running equity level rather than fixed initial capital — an early loss shrinks the capital base, so subsequent equal-dollar trades produce larger percentage moves, making the result order-dependent. Max drawdown was already correct (cumsum is path-dependent).
+
+**Tests added:** 3 new tests in `tests/test_metrics.py` — `p5_sharpe < mean_sharpe < p95_sharpe` with mixed returns, `None` guard for < 5 trades, and compounded return sign check.
+
+---
+
+## 2026-04-09
+
+### Config-driven architecture — single source of truth
+
+Eliminated all duplicate parameter sources across the pipeline. Every hyperparameter now has exactly one owner.
+
+**Per-training config files required everywhere.** `--config FILE` is now a required argument for `train`, `backtest`, `portfolio`, and `calibrate`. There are no hardcoded fallbacks in `main.py` — passing no config exits with a clear error. The config filename determines the checkpoint directory (`configs/indexes.json` → `checkpoints/indexes/`).
+
+**`ModelConfig` fields all required.** `buy_threshold`, `sell_threshold`, and `prediction_horizons` no longer have Pydantic defaults — they must be present in the saved JSON. This eliminates the risk of loading a stale config and silently using a wrong threshold.
+
+**`Backtester` constructor cleaned up.** `commission_pct`, `slippage_factor`, and `leverage` are now required positional-style parameters (no defaults). `buy_threshold`, `sell_threshold`, and `sequence_length` were removed from the constructor entirely — they are read exclusively from the saved model config by `_load_config()`. `MetricsCalculator` is now created inside `_load_config()` with the real values, not with placeholder zeros.
+
+**`WalkForwardTrainer` required params.** `sequence_length`, `prediction_horizons`, `buy_threshold`, and `sell_threshold` must be passed explicitly (typically from the config). Walk-forward methodology params (`initial_train_days`, `validation_days`, `step_days`, `purge_gap`, `embargo_gap`) retain their defaults.
+
+**Constants centralised.** `FEATURE_COLUMNS` added to `data/features.py`; `DIRECTION_TO_IDX` added to `models/direction.py`; `TRADING_DAYS_PER_YEAR = 252` added to `backtesting/metrics.py`. All callers updated to import these instead of hardcoding.
+
+---
+
 ## 2026-04-09
 
 ### S3 — Multi-timeframe weekly confirmation filter

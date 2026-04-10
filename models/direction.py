@@ -19,3 +19,11 @@ SELL_IDX: int = 2
 
 # Ordered list matching the softmax output dimension — index i → Direction
 IDX_TO_DIRECTION: list[Direction] = [Direction.BUY, Direction.HOLD, Direction.SELL]
+
+# Reverse mapping: Direction → softmax index.  Import this instead of
+# re-defining {BUY: 0, HOLD: 1, SELL: 2} inline at each call site.
+DIRECTION_TO_IDX: dict[Direction, int] = {
+    Direction.BUY: BUY_IDX,
+    Direction.HOLD: HOLD_IDX,
+    Direction.SELL: SELL_IDX,
+}

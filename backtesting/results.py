@@ -161,6 +161,16 @@ class TradeRecord:
 
 
 @dataclass
+class DirectionMetrics:
+    """Summarized trading metrics for a single signal direction (BUY or SELL)."""
+
+    win_rate: float
+    net_total_return: float
+    sharpe_ratio: float
+    trade_count: int
+
+
+@dataclass
 class HorizonMetrics:
     """Aggregated metrics for a single prediction horizon."""
 
@@ -222,6 +232,20 @@ class HorizonMetrics:
     # Monte Carlo simulation over trade-return permutations (None when trade_count < 5)
     monte_carlo: MonteCarloResult | None = None
 
+    # Avg win / avg loss / profit factor / max consecutive losses
+    avg_win_pct: float = 0.0
+    avg_loss_pct: float = 0.0
+    profit_factor: float = 0.0
+    max_consec_losses: int = 0
+
+    # Per-direction P&L breakdown (None when fewer than 5 trades for that direction)
+    buy_trading: DirectionMetrics | None = None
+    sell_trading: DirectionMetrics | None = None
+
+    # Confidence-stratified win rates
+    confidence_win_rates: dict[str, float] = field(default_factory=dict)
+    confidence_trade_counts: dict[str, int] = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "horizon_days": self.horizon_days,
@@ -253,6 +277,24 @@ class HorizonMetrics:
             "trades": [t.to_dict() for t in self.trades],
             "bh_corrected_pvalue": self.bh_corrected_pvalue,
             "monte_carlo": self.monte_carlo.to_dict() if self.monte_carlo is not None else None,
+            "avg_win_pct": self.avg_win_pct,
+            "avg_loss_pct": self.avg_loss_pct,
+            "profit_factor": self.profit_factor,
+            "max_consec_losses": self.max_consec_losses,
+            "buy_trading": {
+                "win_rate": self.buy_trading.win_rate,
+                "net_total_return": self.buy_trading.net_total_return,
+                "sharpe_ratio": self.buy_trading.sharpe_ratio,
+                "trade_count": self.buy_trading.trade_count,
+            } if self.buy_trading is not None else None,
+            "sell_trading": {
+                "win_rate": self.sell_trading.win_rate,
+                "net_total_return": self.sell_trading.net_total_return,
+                "sharpe_ratio": self.sell_trading.sharpe_ratio,
+                "trade_count": self.sell_trading.trade_count,
+            } if self.sell_trading is not None else None,
+            "confidence_win_rates": self.confidence_win_rates,
+            "confidence_trade_counts": self.confidence_trade_counts,
         }
 
 
@@ -360,6 +402,96 @@ class BacktestResult:
                 f"{m.total_return:+.2f}%{'':<5} {m.net_total_return:+.2f}%{'':<5} "
                 f"{m.sharpe_ratio:.2f}{'':<4} {dd_str:<10} {calmar_str}"
             )
+            # Avg win / avg loss / profit factor / max consec losses sub-row
+            if m.trade_count > 0:
+                pf_str = f"{m.profit_factor:.2f}" if m.profit_factor != 0.0 else "N/A"
+                lines.append(
+                    f"{'':>10} Avg win: {m.avg_win_pct:+.2f}%  "
+                    f"Avg loss: {m.avg_loss_pct:+.2f}%  "
+                    f"Profit factor: {pf_str}  "
+                    f"Max consec losses: {m.max_consec_losses}"
+                )
+
+        # --- WEEKLY BREAKDOWN ---
+        has_weekly_data = any(m.trades for m in self.horizon_metrics.values())
+        if has_weekly_data:
+            lines.extend(
+                [
+                    "",
+                    "WEEKLY BREAKDOWN",
+                    "-" * 80,
+                    f"{'Horizon':<10} {'Week':<12} {'Trades':<10} {'Win Rate':<14} {'Net Return'}",
+                ]
+            )
+            for horizon in sorted(self.horizon_metrics.keys()):
+                m = self.horizon_metrics[horizon]
+                if not m.trades:
+                    continue
+                # Group by ISO year + week number
+                weeks: dict[str, list] = {}
+                for t in m.trades:
+                    iso = t.date.isocalendar()
+                    label = f"{iso[0]}-W{iso[1]:02d}"
+                    weeks.setdefault(label, []).append(t)
+                if len(weeks) < 2:
+                    continue
+                for wlabel in sorted(weeks.keys()):
+                    wtrades = weeks[wlabel]
+                    w_wins = sum(1 for t in wtrades if t.net_pct > 0)
+                    w_wr = w_wins / len(wtrades) * 100
+                    w_net = sum(t.net_pct for t in wtrades)
+                    lines.append(
+                        f"{horizon}-day{'':<5} {wlabel:<12} {len(wtrades):<10} "
+                        f"{w_wr:.1f}%{'':<9} {w_net:+.2f}%"
+                    )
+
+        # --- PER-DIRECTION BREAKDOWN ---
+        has_direction_data = any(
+            m.buy_trading is not None or m.sell_trading is not None
+            for m in self.horizon_metrics.values()
+        )
+        if has_direction_data:
+            lines.extend(
+                [
+                    "",
+                    "PER-DIRECTION BREAKDOWN",
+                    "-" * 80,
+                    f"{'Horizon':<10} {'Direction':<12} {'Trades':<10} {'Win Rate':<14} {'Net Ret':<12} {'Sharpe'}",
+                ]
+            )
+            for horizon in sorted(self.horizon_metrics.keys()):
+                m = self.horizon_metrics[horizon]
+                for direction, dm in (("BUY", m.buy_trading), ("SELL", m.sell_trading)):
+                    if dm is None:
+                        continue
+                    lines.append(
+                        f"{horizon}-day{'':<5} {direction:<12} {dm.trade_count:<10} "
+                        f"{dm.win_rate * 100:.1f}%{'':<9} "
+                        f"{dm.net_total_return:+.2f}%{'':<5} {dm.sharpe_ratio:.2f}"
+                    )
+
+        # --- CONFIDENCE vs WIN RATE ---
+        has_conf_data = any(m.confidence_win_rates for m in self.horizon_metrics.values())
+        if has_conf_data:
+            lines.extend(
+                [
+                    "",
+                    "CONFIDENCE vs WIN RATE",
+                    "-" * 80,
+                ]
+            )
+            for horizon in sorted(self.horizon_metrics.keys()):
+                m = self.horizon_metrics[horizon]
+                if not m.confidence_win_rates:
+                    continue
+                lines.append(f"{horizon}-day horizon:")
+                lines.append(
+                    f"  {'Confidence':<14} {'Trades':<10} {'Win Rate'}"
+                )
+                for bucket in sorted(m.confidence_win_rates.keys()):
+                    wr = m.confidence_win_rates[bucket]
+                    cnt = m.confidence_trade_counts.get(bucket, 0)
+                    lines.append(f"  {bucket:<14} {cnt:<10} {wr * 100:.1f}%")
 
         lines.append("")
         lines.append("BENCHMARK COMPARISON")

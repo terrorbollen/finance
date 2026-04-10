@@ -51,7 +51,7 @@ See [`backtesting/STRATEGY.md`](backtesting/STRATEGY.md) for what makes a backte
 If your change touches `models/`, `data/features.py`, or `signals/`, run a backtest before and after and compare via `history`:
 
 ```bash
-uv run python main.py backtest VOLV-B.ST
+uv run python main.py backtest VOLV-B.ST --config configs/indexes.json
 uv run python main.py history --ticker VOLV-B.ST
 ```
 
@@ -106,11 +106,9 @@ Features and fixes already implemented. Do not re-implement these; understand th
 
 ### Feature engineering
 
-- **Market regime indicators** — ADX, volatility regime — `data/features.py`
-- **Cross-asset features** — OMXS30 correlation, USD/SEK, EUR/SEK — `data/features.py`, `data/fetcher.py`
-- **Calendar effects** — day of week, month, earnings season — `data/features.py`
-- **Volatility features** — VIX/VSTOXX correlation — `data/features.py`, `data/fetcher.py`
-- **Macro indicators** — oil prices, interest rates — `data/features.py`, `data/fetcher.py`
+The feature set is intentionally kept to **8 core indicators** chosen for low mutual redundancy: `rsi`, `macd_histogram`, `momentum_10`, `returns`, `atr`, `bb_position`, `volume_ratio`, `adx_14`. Do not add new features without a validated before/after backtest showing Sharpe and net return both improve across multiple tickers. Features that were trialled and removed (cross-asset, macro, VIX/VSTOXX, calendar) offered no validated lift and added out-of-sample risk.
+
+- **ADX regime breakdown** — `adx_14` feature provides trend-strength context — `data/features.py`
 - **Out-of-distribution feature detection** — at inference time, features outside mean ± 3 std trigger a warning; stats come from `signal_model_config.json`
 - **Bollinger Band zero-width guard** — `bb_position = 0.5` when rolling std is zero, instead of dropping the row — `data/features.py`
 - **ADX zero-ATR guard** — `.where(atr_w > 0, 0.0)` applied to `di_plus`/`di_minus` to prevent `Inf`/`NaN` on constant-price periods — `data/features.py`
@@ -128,3 +126,4 @@ Features and fixes already implemented. Do not re-implement these; understand th
 
 - **MLflow experiment tracking** — auto-connect via env var, consolidated experiment names, CLI args logged as `cli.*` tags — `models/mlflow_tracking.py`, `models/training.py`, `models/walk_forward.py`, `main.py`
 - **MLflow backtest logging + `history` CLI command** — backtest metrics persisted to MLflow; `main.py history` shows trend across runs — `models/mlflow_tracking.py`, `main.py`
+- **Per-training config files** — `configs/stocks.json` and `configs/indexes.json` centralise all hyperparameters (tickers, thresholds, horizons, commission, leverage, slippage). Pass `--config FILE` to `train`, `backtest`, and `portfolio`; the config filename determines the checkpoint directory (`configs/stocks.json` → `checkpoints/stocks/`). CLI args always override config values. MLflow records every hyperparameter per run, so versioning configs is not necessary — compare runs via `history` instead. Do not hardcode tickers, commissions, or thresholds in `main.py`; they must come from a config file or an explicit CLI override — `configs/`, `main.py`
