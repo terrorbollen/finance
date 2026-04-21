@@ -10,6 +10,7 @@ See ARCHITECTURE.md §3 for the full field reference.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -34,6 +35,7 @@ class ModelConfig(BaseModel):
     buy_threshold: float
     sell_threshold: float
     prediction_horizons: list[int]
+    tickers: list[str] = []
 
     @field_validator("feature_std")
     @classmethod
@@ -79,15 +81,50 @@ class ModelConfig(BaseModel):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(self.model_dump_json(indent=2))
 
+    # ------------------------------------------------------------------
+    # Model registry — maps short alias → versioned folder name
+    # ------------------------------------------------------------------
+
+    _REGISTRY = Path("checkpoints/REGISTRY.json")
+
+    @staticmethod
+    def resolve_name(name: str) -> str:
+        """Resolve a short alias (e.g. 'indexes') to its versioned folder name.
+
+        If the alias has no registry entry the name is returned unchanged,
+        which preserves backward compatibility with pre-versioned directories.
+        """
+        if ModelConfig._REGISTRY.exists():
+            registry = json.loads(ModelConfig._REGISTRY.read_text())
+            if name in registry:
+                return registry[name]
+        return name
+
+    @staticmethod
+    def update_registry(alias: str, versioned_name: str) -> None:
+        """Point alias → versioned_name in the checkpoint registry."""
+        registry: dict[str, str] = {}
+        if ModelConfig._REGISTRY.exists():
+            registry = json.loads(ModelConfig._REGISTRY.read_text())
+        registry[alias] = versioned_name
+        ModelConfig._REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        ModelConfig._REGISTRY.write_text(json.dumps(registry, indent=2) + "\n")
+
     @staticmethod
     def checkpoint_paths(name: str | None = None) -> dict[str, str]:
         """Return the canonical checkpoint file paths for a named model.
 
+        If *name* is a registered alias (e.g. 'indexes') it is resolved to the
+        latest versioned folder (e.g. 'indexes-20260421-143022') via the
+        registry.  An explicit versioned name or an unregistered name is used
+        as-is, preserving backward compatibility with pre-versioned directories.
+
         Args:
-            name: Model name (e.g. 'financials'). Uses 'checkpoints/<name>/'.
-                  If None, uses the default 'checkpoints/' directory.
+            name: Model alias or versioned name (e.g. 'indexes' or
+                  'indexes-20260421-143022'). None uses 'checkpoints/'.
         """
-        base = f"checkpoints/{name}" if name else "checkpoints"
+        resolved = ModelConfig.resolve_name(name) if name else None
+        base = f"checkpoints/{resolved}" if resolved else "checkpoints"
         return {
             "weights": f"{base}/signal_model.weights.h5",
             "config": f"{base}/signal_model_config.json",

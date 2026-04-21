@@ -206,44 +206,34 @@ class TestKellyFraction:
 
     def test_capped_at_kelly_max_over_max_positions(self, bt: PortfolioBacktester):
         """Fraction must not exceed kelly_max / max_positions."""
+        assert bt.max_positions is not None
         cap = bt.kelly_max / bt.max_positions
         fraction = bt._kelly_fraction(confidence=0.99, predicted_change_pct=50.0)
         assert fraction <= cap + 1e-9
 
     def test_confidence_clamped_to_one(self, bt: PortfolioBacktester):
         """Confidence > 1.0 is clamped to 1.0 — fraction must still be finite and positive."""
+        assert bt.max_positions is not None
         fraction = bt._kelly_fraction(confidence=2.0, predicted_change_pct=5.0)
         assert 0.0 < fraction <= bt.kelly_max / bt.max_positions
 
-    # P1 REGRESSION — documents the known bug so we know when it's fixed
-    def test_p1_kelly_uses_initial_capital_not_current(self):
-        """
-        P1 BUG REGRESSION: kelly position sizing uses self.initial_capital as the basis,
-        not the current available capital.  After a drawdown, position_capital can exceed
-        available cash.
+    def test_kelly_position_uses_current_capital(self, bt: PortfolioBacktester):
+        """After a drawdown, sizing must scale to current capital, not initial capital."""
+        kelly_f = 0.5
+        current_capital = 2_000.0
 
-        This test documents the CURRENT (buggy) behaviour so that fixing P1 requires
-        updating this assertion.  When the bug is fixed:
-          - position_capital should be current_capital * kelly_f, not initial_capital * kelly_f
-          - This test's assertion should be inverted.
-        """
-        bt = PortfolioBacktester.__new__(PortfolioBacktester)
-        bt.stop_loss_pct = 0.05
-        bt.kelly_max = 3.0
-        bt.max_positions = 1
-        bt._cal_buckets = []
+        position_capital = bt._kelly_position_size(current_capital, kelly_f)
 
-        # If current capital is much less than initial_capital and kelly_f = 0.5,
-        # position_capital = initial_capital * 0.5 would exceed current capital.
-        # The code does: position_capital = min(capital, self.initial_capital * kelly_f)
-        # When initial_capital * kelly_f > capital, position_capital = capital (capped).
-        # When initial_capital * kelly_f < capital, position_capital = initial_capital * kelly_f
-        # (the bug: basis is initial, not current).
-        kelly_f = bt._kelly_fraction(confidence=0.7, predicted_change_pct=5.0)
-        assert kelly_f > 0, "Setup sanity: Kelly fraction should be positive"
-        # The bug exists in run() — _kelly_fraction itself is not buggy, just the caller.
-        # Confirm the fraction is computed from parameters without referencing capital state.
-        assert kelly_f <= bt.kelly_max / bt.max_positions
+        assert abs(position_capital - 1_000.0) < 1e-9
+        assert position_capital < current_capital
+
+    def test_kelly_position_capped_at_available_capital(self, bt: PortfolioBacktester):
+        """kelly_f > 1.0 must not produce a position larger than available capital."""
+        # kelly_f can exceed 1.0 when kelly_max / max_positions > 1 (e.g. 3.0/1).
+        # Committing more cash than available would cause the downstream guard to skip
+        # the trade entirely; capping at capital is preferable (invest at most 100%).
+        position_capital = bt._kelly_position_size(capital=1_000.0, kelly_f=2.0)
+        assert position_capital <= 1_000.0
 
 
 # ---------------------------------------------------------------------------

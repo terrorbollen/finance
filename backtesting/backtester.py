@@ -54,6 +54,8 @@ class Backtester:
         retrain_every: int | None = None,
         retrain_epochs: int = 20,
         retrain_batch_size: int = 32,
+        min_adx: float | None = None,
+        signal_threshold: float | None = None,
     ):
         """
         Initialize the backtester.
@@ -74,6 +76,16 @@ class Backtester:
             retrain_epochs: Number of training epochs per retrain (default 20).
             retrain_batch_size: Batch size used during periodic retrains. Should match
                                 the batch_size from the training config (default 32).
+            min_adx: Minimum ADX(14) value required to act on a BUY or SELL signal.
+                     When ADX is below this threshold the market is ranging and the
+                     signal is downgraded to HOLD. None disables the filter (default).
+                     Evidence from holdout evaluation suggests 25 is a good starting point.
+            signal_threshold: Minimum softmax probability for BUY or SELL to override
+                              HOLD. When set, a signal is emitted if P(BUY) >= threshold
+                              or P(SELL) >= threshold (BUY takes priority on ties), instead
+                              of the default argmax rule. Lower values produce more trades
+                              but noisier signals. Try 0.33 (any directional edge) to 0.40.
+                              None uses argmax (default).
 
         Note: sequence_length, buy_threshold, sell_threshold, and prediction_horizons
         are not constructor parameters — they are always read from the saved model config
@@ -86,6 +98,8 @@ class Backtester:
         self.retrain_every = retrain_every
         self.retrain_epochs = retrain_epochs
         self.retrain_batch_size = retrain_batch_size
+        self.min_adx = min_adx
+        self.signal_threshold = signal_threshold
 
         # Stored so _load_config() can create MetricsCalculator with the correct values
         self._commission_pct = commission_pct
@@ -283,7 +297,7 @@ class Backtester:
                     for idx in backtest_indices
                 ]
             )
-            horizon_probs_list, horizon_classes_list, price_targets_all = (
+            horizon_probs_list, _, price_targets_all = (
                 self.model.predict_per_horizon(X_all)
             )
         else:
@@ -291,7 +305,6 @@ class Backtester:
             n = self.retrain_every
             chunks = [backtest_indices[i : i + n] for i in range(0, len(backtest_indices), n)]
             all_horizon_probs_parts: list[list[np.ndarray]] = []
-            all_horizon_classes_parts: list[list[np.ndarray]] = []
             all_prices_parts: list[np.ndarray] = []
 
             for chunk_idx, chunk in enumerate(chunks):
@@ -310,18 +323,13 @@ class Backtester:
                 )
                 if self.model is None:
                     raise RuntimeError("Model lost after retrain")
-                h_probs, h_classes, prices = self.model.predict_per_horizon(X_chunk)
+                h_probs, _, prices = self.model.predict_per_horizon(X_chunk)
                 all_horizon_probs_parts.append(h_probs)
-                all_horizon_classes_parts.append(h_classes)
                 all_prices_parts.append(prices)
 
             n_heads = len(self.model.prediction_horizons)
             horizon_probs_list = [
                 np.vstack([parts[h] for parts in all_horizon_probs_parts])
-                for h in range(n_heads)
-            ]
-            horizon_classes_list = [
-                np.concatenate([parts[h] for parts in all_horizon_classes_parts])
                 for h in range(n_heads)
             ]
             price_targets_all = np.concatenate(all_prices_parts)
@@ -363,12 +371,27 @@ class Backtester:
                 head_idx = horizon_head_idx.get(horizon)
                 if head_idx is not None:
                     probs_row = horizon_probs_list[head_idx][i]
-                    direction_idx = int(horizon_classes_list[head_idx][i])
                 else:
                     # Horizon not trained — fall back to average across all heads
                     probs_row = avg_probs_all[i]
+                if self.signal_threshold is not None:
+                    # Threshold mode: emit BUY/SELL if either exceeds the floor
+                    if float(probs_row[0]) >= self.signal_threshold:
+                        direction_idx = 0  # BUY
+                    elif float(probs_row[2]) >= self.signal_threshold:
+                        direction_idx = 2  # SELL
+                    else:
+                        direction_idx = 1  # HOLD
+                else:
                     direction_idx = int(np.argmax(probs_row))
                 predicted_signal = [Signal.BUY, Signal.HOLD, Signal.SELL][direction_idx]
+                # ADX regime filter: downgrade directional signals in ranging markets
+                if (
+                    predicted_signal != Signal.HOLD
+                    and self.min_adx is not None
+                    and (adx is None or adx < self.min_adx)
+                ):
+                    predicted_signal = Signal.HOLD
                 confidence = float(probs_row[direction_idx])
                 all_probs = (float(probs_row[0]), float(probs_row[1]), float(probs_row[2]))
                 daily_pred.add_prediction(

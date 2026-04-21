@@ -4,6 +4,39 @@ Format: one entry per meaningful task completion. Add to the top. Each entry sho
 
 ---
 
+## 2026-04-21
+
+### Model versioning — auto-timestamped checkpoints and `models` command
+Every `train` run now saves to `checkpoints/<name>-YYYYMMDD-HHMMSS/` instead of overwriting `checkpoints/<name>/`. A `REGISTRY.json` file maps the short alias (`indexes`) to the latest versioned folder, so `--name indexes` in backtest/signal commands always resolves to the most recent model without needing to know the timestamp. Old versions are preserved on disk and accessible via their explicit versioned name. Added `main.py models` subcommand that lists all saved checkpoints with trained date, holdout date, horizons, and tickers. Added `tickers` field to `ModelConfig` so the list is self-contained without needing MLflow.
+
+### Signal/backtest consistency — use shortest-horizon head directly, not majority vote
+Live signal generation was calling `model.predict()` (majority vote across all horizon heads) while the backtester was calling `predict_per_horizon()` and reading the 5d head directly. This meant a BUY the 5d head was confident about could be silently overruled by the 10d/20d heads in live signals but not in backtests. Fixed by switching `SignalGenerator.generate()` to `predict_per_horizon()` and reading `horizon_probs_list[0]` (shortest horizon). Also added `signal_threshold` parameter to `SignalGenerator`, matching the backtester, so the same threshold-based decision rule applies to both live and historical signals.
+
+### S2 — ADX regime filter: suppress directional signals in ranging markets
+Added `min_adx` parameter to `SignalGenerator` and `Backtester`. When set, any BUY or SELL signal is downgraded to HOLD if ADX(14) is below the threshold, filtering out low-conviction signals in sideways markets where trend-following signals are unreliable. CLI flag `--min-adx` allows per-run tuning without retraining. Default is `None` (disabled, fully backward-compatible).
+
+### B19 — Fix Monte Carlo display: replace order-independent return column with max drawdown
+
+The Monte Carlo section was showing `MC Return mean [p5,p95]` as `+113% [+113%, +113%]` with zero spread across all 1 000 permutations. This looked broken but is mathematically correct — compounded total return is commutative (order of multiplication doesn't matter), so it never varies by trade ordering. The column was misleading and gave no path-dependency information. Replaced it with max drawdown, which IS order-dependent (an early loss creates a deeper trough than the same loss later). Also added `observed_max_drawdown_pct` to `MonteCarloResult` so the output shows where the actual drawdown ranks vs random orderings — lower is better. The Sharpe CI column was already working correctly and is unchanged. All 324 tests pass.
+
+---
+
+## 2026-04-21
+
+### P2 — Audit and document commission convention; fix over-allocation edge case
+
+Audited the commission formula in `PortfolioBacktester.run()`: `entry_val` is consistently base cash (pre-leverage), so `entry_val * commission_pct * 2 * eff_lev` correctly charges on the leveraged notional — no double-counting. Added an inline comment at the commission line to document this convention and prevent future confusion. Also fixed a related edge case in `_kelly_position_size`: when `kelly_f > 1.0` (possible when `kelly_max=3.0` and `max_positions=1`), the previous implementation would return a position larger than available capital, causing the downstream guard to silently skip the trade. The method now caps at available capital via `min(capital, capital * kelly_f)`. Two regression tests added.
+
+---
+
+## 2026-04-21
+
+### P1 + I16 — Fix Kelly position sizing and mypy type guards in portfolio tests
+
+`PortfolioBacktester.run()` was sizing Kelly positions as `min(capital, self.initial_capital * kelly_f)`. After a drawdown, this could commit 100% of remaining cash to a single position — e.g. with $2k left and a 50% Kelly fraction on a $10k initial, it sized $2k instead of $1k. Fixed by extracting the sizing into `_kelly_position_size(capital, kelly_f)` which correctly uses `capital * kelly_f`. Also added `assert bt.max_positions is not None` guards before two division sites in `tests/test_portfolio.py` where `max_positions: int | None` caused a mypy error.
+
+---
+
 ## 2026-04-09 (latest)
 
 ### B19: Fixed Monte Carlo simulation — permutations now produce distinct results

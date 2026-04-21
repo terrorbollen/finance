@@ -1,6 +1,6 @@
 services:
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.10.0
+    image: ghcr.io/mlflow/mlflow:latest
     ports:
       - "5001:5001"
     volumes:

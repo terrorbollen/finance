@@ -108,10 +108,61 @@ def cmd_scan(args):
         print()
 
 
+def cmd_models(args) -> None:
+    """List all saved model checkpoints."""
+    checkpoints_dir = Path("checkpoints")
+    if not checkpoints_dir.exists():
+        print("No checkpoints directory found.")
+        return
+
+    # Load registry to identify aliases
+    registry: dict[str, str] = {}
+    registry_path = checkpoints_dir / "REGISTRY.json"
+    if registry_path.exists():
+        registry = json.loads(registry_path.read_text())
+    latest_set = set(registry.values())  # versioned names that are currently "latest"
+    alias_map = {v: k for k, v in registry.items()}  # versioned → alias
+
+    rows = []
+    for d in sorted(checkpoints_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        config_file = d / "signal_model_config.json"
+        if not config_file.exists():
+            continue
+        try:
+            cfg = ModelConfig.load(str(config_file))
+        except Exception:
+            continue
+        alias = alias_map.get(d.name, "")
+        is_latest = d.name in latest_set
+        rows.append((d.name, alias, is_latest, cfg))
+
+    if not rows:
+        print("No model checkpoints found.")
+        return
+
+    header = f"  {'Folder':<35} {'Alias':<12} {'Trained':<12} {'Holdout':<12} {'Horizons':<14} {'Tickers'}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for folder, alias, is_latest, cfg in rows:
+        marker = " *" if is_latest else "  "
+        tickers_str = ",".join(cfg.tickers) if cfg.tickers else "—"
+        horizons_str = ",".join(str(h) for h in cfg.prediction_horizons)
+        print(
+            f"{marker} {folder:<35} {alias:<12} "
+            f"{cfg.training_fetch_date!s:<12} {cfg.holdout_start_date!s:<12} "
+            f"{horizons_str:<14} {tickers_str}"
+        )
+
+    if registry:
+        print("\n  * = current latest (alias resolves here when used with --name)")
+
+
 def cmd_train(args):
     """Train the signal model."""
     cfg = _load_config(getattr(args, "config", None))
-    model_name = _checkpoint_name(getattr(args, "config", None))
+    base_name = _checkpoint_name(getattr(args, "config", None))
 
     # CLI args win; config is the source of truth for everything else
     tickers = args.tickers or cfg["tickers"]
@@ -124,8 +175,14 @@ def cmd_train(args):
         else cfg["prediction_horizons"]
     )
 
+    # Auto-generate a versioned folder name: <base>-YYYYMMDD-HHMMSS
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    versioned_name = f"{base_name}-{timestamp}" if base_name else timestamp
+    paths = ModelConfig.checkpoint_paths(versioned_name)
+
     print(f"\nTraining model on {len(tickers)} tickers...")
     print(f"Config: {getattr(args, 'config', None) or 'defaults'}")
+    print(f"Saving to: checkpoints/{versioned_name}/")
     print(f"Epochs: {epochs}  |  Batch size: {batch_size}  |  Horizons: {horizons}")
     print(f"Walk-forward: {args.walk_forward}")
     print("-" * 50)
@@ -138,6 +195,7 @@ def cmd_train(args):
         "cli.focal_loss": str(use_focal_loss),
         "cli.tickers": ",".join(tickers),
         "cli.config": getattr(args, "config", None) or "defaults",
+        "cli.versioned_name": versioned_name,
     }
 
     try:
@@ -157,16 +215,14 @@ def cmd_train(args):
                 tickers=tickers,
                 epochs=epochs,
                 batch_size=batch_size,
+                model_path=paths["weights"],
                 track_with_mlflow=track,
                 tags=cli_tags,
             )
             print("\n" + results.summary())
         else:
-            from datetime import datetime as _dt
-
-            paths = ModelConfig.checkpoint_paths(model_name)
             holdout_date = (
-                _dt.strptime(args.holdout_start, "%Y-%m-%d").date()
+                datetime.strptime(args.holdout_start, "%Y-%m-%d").date()
                 if getattr(args, "holdout_start", None)
                 else None
             )
@@ -202,9 +258,17 @@ def cmd_train(args):
                     slippage_factor=cfg["slippage_factor"],
                     leverage=cfg["leverage"],
                     mlflow_run_id=results.get("mlflow_run_id"),
-                    model_name=model_name,
+                    model_name=versioned_name,
                     directional_output_path=paths["calibration_directional"],
                 )
+
+        # Register alias → versioned name so --name <base> resolves here
+        if base_name:
+            ModelConfig.update_registry(base_name, versioned_name)
+            print(f"\nSaved to checkpoints/{versioned_name}/")
+            print(f"Alias '{base_name}' now points to this version.")
+            print(f"Use --name {versioned_name} to reference this model explicitly.")
+
     except Exception as e:
         print(f"Training error: {e}")
         sys.exit(1)
@@ -236,6 +300,8 @@ def _run_leverage_comparison(args, start_date, end_date, horizons, commission, s
             strict_holdout=not args.no_strict_holdout,
             leverage=lev,
             enforce_position_cooldown=True,
+            min_adx=getattr(args, "min_adx", None),
+            signal_threshold=getattr(args, "signal_threshold", None),
         )
         result = backtester.run(
             ticker=args.ticker,
@@ -304,6 +370,8 @@ def cmd_backtest(args):
         retrain_every=getattr(args, "retrain_every", None),
         retrain_epochs=getattr(args, "retrain_epochs", 20),
         retrain_batch_size=cfg["batch_size"],
+        min_adx=getattr(args, "min_adx", None),
+        signal_threshold=getattr(args, "signal_threshold", None),
     )
     try:
         result = backtester.run(
@@ -759,6 +827,10 @@ Examples:
     )
     train_parser.set_defaults(func=cmd_train)
 
+    # models command
+    models_parser = subparsers.add_parser("models", help="List all saved model checkpoints")
+    models_parser.set_defaults(func=cmd_models)
+
     # list command
     list_parser = subparsers.add_parser("list", help="List available tickers")
     list_parser.set_defaults(func=cmd_list)
@@ -832,6 +904,27 @@ Examples:
         default=20,
         dest="retrain_epochs",
         help="Epochs per retrain when --retrain-every is set (default: 20).",
+    )
+    backtest_parser.add_argument(
+        "--min-adx",
+        type=float,
+        default=None,
+        dest="min_adx",
+        metavar="ADX",
+        help="Minimum ADX(14) to act on a BUY or SELL signal. Signals in ranging markets "
+        "(ADX below threshold) are downgraded to HOLD. None disables the filter (default). "
+        "Evidence from holdout evaluation suggests 25 as a starting point.",
+    )
+    backtest_parser.add_argument(
+        "--signal-threshold",
+        type=float,
+        default=None,
+        dest="signal_threshold",
+        metavar="PROB",
+        help="Minimum softmax probability for BUY or SELL to fire instead of HOLD. "
+        "Replaces the default argmax rule — e.g. 0.33 emits a signal whenever any "
+        "directional class has at least 1/3 probability. Produces more trades but "
+        "noisier signals. None uses argmax (default).",
     )
     backtest_parser.add_argument(
         "--name",

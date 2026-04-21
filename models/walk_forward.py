@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from typing import cast
 
 import numpy as np
@@ -545,18 +546,22 @@ class WalkForwardTrainer:
                     config_path = model_path.replace(".weights.h5", "_config.json")
                     if self.feature_mean is None or self.feature_std is None:
                         raise RuntimeError("feature_mean/std not set; call prepare_data first")
-                    config = {
-                        "feature_columns": self.feature_columns,
-                        "feature_mean": self.feature_mean.tolist(),
-                        "feature_std": self.feature_std.tolist(),
-                        "sequence_length": self.sequence_length,
-                        "input_dim": X.shape[2],
-                        "prediction_horizons": self.prediction_horizons,
-                        "walk_forward": True,
-                        "num_windows": len(windows),
-                    }
-                    with open(config_path, "w") as f:
-                        json.dump(config, f)
+                    from models.config import ModelConfig  # noqa: PLC0415
+
+                    cfg_obj = ModelConfig(
+                        feature_columns=self.feature_columns,
+                        feature_mean=self.feature_mean.tolist(),
+                        feature_std=self.feature_std.tolist(),
+                        sequence_length=self.sequence_length,
+                        input_dim=X.shape[2],
+                        training_fetch_date=date.today(),
+                        holdout_start_date=date.today(),  # walk-forward uses all data
+                        buy_threshold=self.buy_threshold,
+                        sell_threshold=self.sell_threshold,
+                        prediction_horizons=self.prediction_horizons,
+                        tickers=tickers,
+                    )
+                    cfg_obj.save(config_path)
 
                     if verbose:
                         print(f"\nSaved best model to {model_path}")

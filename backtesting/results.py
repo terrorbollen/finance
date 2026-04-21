@@ -32,6 +32,9 @@ class MonteCarloResult:
     mean_max_drawdown: float
     p5_max_drawdown: float
     p95_max_drawdown: float
+    # Percentile rank of the observed max drawdown vs simulations (0–100).
+    # Lower is better: 10 means the actual drawdown was shallower than 90% of random orderings.
+    observed_max_drawdown_pct: float
 
     # Sharpe ratio distribution
     mean_sharpe: float
@@ -50,6 +53,7 @@ class MonteCarloResult:
             "mean_max_drawdown": round(self.mean_max_drawdown, 4),
             "p5_max_drawdown": round(self.p5_max_drawdown, 4),
             "p95_max_drawdown": round(self.p95_max_drawdown, 4),
+            "observed_max_drawdown_pct": round(self.observed_max_drawdown_pct, 1),
             "mean_sharpe": round(self.mean_sharpe, 4),
             "p5_sharpe": round(self.p5_sharpe, 4),
             "p95_sharpe": round(self.p95_sharpe, 4),
@@ -534,11 +538,12 @@ class BacktestResult:
         lines.extend(["", "MONTE CARLO SIMULATION (trade-order permutations)"])
         lines.append("-" * 80)
         lines.append("Shuffles realized trade returns 1 000 times to test path-dependency.")
+        lines.append("Max drawdown and Sharpe vary by trade ordering; total compounded return does not.")
         lines.append(
-            "Observed pct = where your result ranks vs random orderings (>50 is above average)."
+            "For max DD: lower observed pct is better (shallower than most random orderings)."
         )
         lines.append(
-            f"{'Horizon':<10} {'MC Return mean [p5,p95]':<30} {'Obs pct':<10} {'MC Sharpe mean [p5,p95]':<30} {'Obs pct'}"
+            f"{'Horizon':<10} {'MC Max DD mean [p5,p95]':<32} {'Obs pct':<10} {'MC Sharpe mean [p5,p95]':<30} {'Obs pct'}"
         )
         lines.append("-" * 80)
         for horizon in sorted(self.horizon_metrics.keys()):
@@ -547,10 +552,10 @@ class BacktestResult:
                 lines.append(f"{horizon}-day{'':<5} N/A (fewer than 5 trades)")
                 continue
             mc = m.monte_carlo
-            ret_str = f"{mc.mean_total_return:+.1f}% [{mc.p5_total_return:+.1f}%, {mc.p95_total_return:+.1f}%]"
+            dd_str = f"{mc.mean_max_drawdown:+.1f}% [{mc.p5_max_drawdown:+.1f}%, {mc.p95_max_drawdown:+.1f}%]"
             sharpe_str = f"{mc.mean_sharpe:.2f} [{mc.p5_sharpe:.2f}, {mc.p95_sharpe:.2f}]"
             lines.append(
-                f"{horizon}-day{'':<5} {ret_str:<30} {mc.observed_total_return_pct:.0f}%{'':<5} "
+                f"{horizon}-day{'':<5} {dd_str:<32} {mc.observed_max_drawdown_pct:.0f}%{'':<5} "
                 f"{sharpe_str:<30} {mc.observed_sharpe_pct:.0f}%"
             )
         lines.append("=" * 80)

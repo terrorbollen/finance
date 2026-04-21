@@ -322,6 +322,8 @@ class PortfolioBacktester:
                 trade.actual_return = horizon_return
                 eff_lev = trade.effective_leverage
                 direction = -1.0 if trade.is_short else 1.0
+                # entry_val is base cash (pre-leverage); leveraged notional = entry_val * eff_lev.
+                # Commission is charged on the notional, round-trip (factor of 2).
                 commission = entry_val * self.commission_pct * 2 * eff_lev
                 trade.commission_paid = commission
                 if horizon_return is not None:
@@ -358,7 +360,7 @@ class PortfolioBacktester:
                         kelly_f = self._kelly_fraction(cal_conf, pred.predicted_price_change)
                         if kelly_f <= 0:
                             continue
-                        position_capital = min(capital, self.initial_capital * kelly_f)
+                        position_capital = self._kelly_position_size(capital, kelly_f)
                         eff_lev = 1.0
                     else:
                         position_capital = alloc_value
@@ -423,13 +425,17 @@ class PortfolioBacktester:
                 return float(b["calibrated"])
         return raw_confidence  # fallback: return raw if no bucket matches
 
+    def _kelly_position_size(self, capital: float, kelly_f: float) -> float:
+        """Commit a Kelly fraction of current capital, capped at available capital."""
+        return min(capital, capital * kelly_f)
+
     def _kelly_fraction(self, confidence: float, predicted_change_pct: float) -> float:
         """
         Half-Kelly position size as fraction of total capital.
 
         f* = (p*b - q) / b  where b = predicted_gain / stop_loss
         Returns half-Kelly fraction clamped to [0, kelly_max / max_positions].
-        The result is used directly as: position_size = initial_capital * kelly_f.
+        The result is used directly as: position_size = current_capital * kelly_f.
         """
         p = min(max(confidence, 0.0), 1.0)
         q = 1.0 - p

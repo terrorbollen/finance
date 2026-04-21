@@ -119,6 +119,8 @@ class SignalGenerator:
         min_volume_ratio: float | None = 0.3,
         earnings_buffer_days: int | None = None,
         require_weekly_confirmation: bool = False,
+        min_adx: float | None = None,
+        signal_threshold: float | None = None,
     ):
         """
         Initialize the signal generator.
@@ -151,6 +153,15 @@ class SignalGenerator:
                                          is only kept if the weekly trend is bearish. Signals
                                          that conflict with the weekly direction are downgraded
                                          to HOLD. Default False (disabled).
+            min_adx: Minimum ADX(14) value required to act on a BUY or SELL signal. When ADX
+                     is below this threshold the market is ranging and the signal is downgraded
+                     to HOLD. None disables the filter (default). Evidence from holdout
+                     evaluation suggests 25 is a good starting point.
+            signal_threshold: Minimum softmax probability for BUY or SELL to fire instead of
+                              HOLD. Replaces the majority-vote default — e.g. 0.35 emits a
+                              signal whenever P(BUY) or P(SELL) reaches that level. Aligns
+                              live signal behaviour with the backtester. None uses argmax
+                              on the shortest trained horizon head (default).
         """
         paths = ModelConfig.checkpoint_paths()
         self.model_path = model_path or paths["weights"]
@@ -165,6 +176,8 @@ class SignalGenerator:
         self.min_volume_ratio = min_volume_ratio
         self.earnings_buffer_days = earnings_buffer_days
         self.require_weekly_confirmation = require_weekly_confirmation
+        self.min_adx = min_adx
+        self.signal_threshold = signal_threshold
         self.model: SignalModel | None = None
         self.fetcher = StockDataFetcher(period="1y")
 
@@ -306,14 +319,27 @@ class SignalGenerator:
 
         X = features_norm[-self.sequence_length :].reshape(1, self.sequence_length, -1)
 
-        # Get predictions
-        signal_probs, signal_class, price_target = self.model.predict(X)
+        # Get predictions — use shortest horizon head directly, matching backtester behaviour.
+        # predict() uses majority vote across all heads which suppresses short-term signals
+        # when longer-horizon heads disagree. predict_per_horizon() avoids this.
+        horizon_probs_list, _, price_target = self.model.predict_per_horizon(X)
+        # Shortest horizon is first (prediction_horizons is ordered ascending)
+        probs_row = horizon_probs_list[0][0]  # shape (3,)
+        price_target_val = price_target[0]
 
-        # Extract values
-        direction_idx = signal_class[0]
+        if self.signal_threshold is not None:
+            if float(probs_row[0]) >= self.signal_threshold:
+                direction_idx = 0  # BUY
+            elif float(probs_row[2]) >= self.signal_threshold:
+                direction_idx = 2  # SELL
+            else:
+                direction_idx = 1  # HOLD
+        else:
+            direction_idx = int(np.argmax(probs_row))
+
         direction = IDX_TO_DIRECTION[direction_idx]
-        raw_confidence = float(signal_probs[0][direction_idx])
-        predicted_change = float(price_target[0])
+        raw_confidence = float(probs_row[direction_idx])
+        predicted_change = float(price_target_val)
 
         # Apply confidence calibration — directional takes priority over global
         if self.directional_calibrator is not None and self.directional_calibrator.is_fitted_for(
@@ -481,6 +507,16 @@ class SignalGenerator:
         """
         if direction == Direction.HOLD:
             return direction
+
+        # --- ADX regime filter ---
+        if self.min_adx is not None and "adx_14" in df_features.columns:
+            adx_val = float(df_features["adx_14"].iloc[-1])
+            if not (adx_val >= self.min_adx):  # also catches NaN
+                print(
+                    f"ADX regime filter: {ticker} ADX {adx_val:.1f} "
+                    f"< threshold {self.min_adx:.1f} — forcing HOLD"
+                )
+                return Direction.HOLD
 
         # --- Low-volume filter ---
         if (

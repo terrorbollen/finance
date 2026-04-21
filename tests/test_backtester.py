@@ -77,6 +77,8 @@ def _backtester_with_mock_model(
     bt.retrain_every = None
     bt.retrain_epochs = 20
     bt.enforce_position_cooldown = False
+    bt.min_adx = None
+    bt.signal_threshold = None
     bt.model = _mock_model(signal_idx)
 
     from backtesting.metrics import MetricsCalculator

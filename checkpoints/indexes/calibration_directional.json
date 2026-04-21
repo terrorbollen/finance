@@ -5,7 +5,7 @@
       "num_buckets": 10,
       "min_samples_per_bucket": 10,
       "is_fitted": true,
-      "fitted_at": "2026-04-10T01:58:00.435912+00:00",
+      "fitted_at": "2026-04-21T19:59:35.360803+00:00",
       "buckets": [
         {
           "raw_min": 0.0,
@@ -22,38 +22,38 @@
         {
           "raw_min": 0.2,
           "raw_max": 0.30000000000000004,
-          "calibrated": 0.2361111111111111,
+          "calibrated": 0.24734326976652227,
           "sample_count": 0
         },
         {
           "raw_min": 0.30000000000000004,
           "raw_max": 0.4,
-          "calibrated": 0.2361111111111111,
-          "sample_count": 18
+          "calibrated": 0.24734326976652227,
+          "sample_count": 23
         },
         {
           "raw_min": 0.4,
           "raw_max": 0.5,
-          "calibrated": 0.2394722066254913,
-          "sample_count": 137
+          "calibrated": 0.24734326976652227,
+          "sample_count": 118
         },
         {
           "raw_min": 0.5,
           "raw_max": 0.6000000000000001,
-          "calibrated": 0.2394722066254913,
-          "sample_count": 78
+          "calibrated": 0.24734326976652227,
+          "sample_count": 82
         },
         {
           "raw_min": 0.6000000000000001,
           "raw_max": 0.7000000000000001,
-          "calibrated": 0.7386363636363636,
+          "calibrated": 0.4166666666666667,
           "sample_count": 12
         },
         {
           "raw_min": 0.7000000000000001,
           "raw_max": 0.8,
-          "calibrated": 0.7386363636363636,
-          "sample_count": 11
+          "calibrated": 0.75,
+          "sample_count": 2
         },
         {
           "raw_min": 0.8,
@@ -73,7 +73,7 @@
       "num_buckets": 10,
       "min_samples_per_bucket": 10,
       "is_fitted": true,
-      "fitted_at": "2026-04-10T01:58:00.436110+00:00",
+      "fitted_at": "2026-04-21T19:59:35.361033+00:00",
       "buckets": [
         {
           "raw_min": 0.0,
@@ -90,32 +90,32 @@
         {
           "raw_min": 0.2,
           "raw_max": 0.30000000000000004,
-          "calibrated": 0.25,
+          "calibrated": 0.20833333333333331,
           "sample_count": 0
         },
         {
           "raw_min": 0.30000000000000004,
           "raw_max": 0.4,
-          "calibrated": 0.2524893314366998,
-          "sample_count": 19
+          "calibrated": 0.20833333333333331,
+          "sample_count": 24
         },
         {
           "raw_min": 0.4,
           "raw_max": 0.5,
-          "calibrated": 0.2524893314366998,
-          "sample_count": 111
+          "calibrated": 0.21764705882352942,
+          "sample_count": 170
         },
         {
           "raw_min": 0.5,
           "raw_max": 0.6000000000000001,
-          "calibrated": 0.36507936507936506,
-          "sample_count": 63
+          "calibrated": 0.3225806451612903,
+          "sample_count": 62
         },
         {
           "raw_min": 0.6000000000000001,
           "raw_max": 0.7000000000000001,
-          "calibrated": 0.5,
-          "sample_count": 10
+          "calibrated": 0.6500000000000001,
+          "sample_count": 0
         },
         {
           "raw_min": 0.7000000000000001,
@@ -141,7 +141,7 @@
       "num_buckets": 10,
       "min_samples_per_bucket": 10,
       "is_fitted": true,
-      "fitted_at": "2026-04-10T01:58:00.436291+00:00",
+      "fitted_at": "2026-04-21T19:59:35.361227+00:00",
       "buckets": [
         {
           "raw_min": 0.0,
@@ -164,31 +164,31 @@
         {
           "raw_min": 0.30000000000000004,
           "raw_max": 0.4,
-          "calibrated": 0.7845578231292517,
-          "sample_count": 24
+          "calibrated": 0.7842480752780154,
+          "sample_count": 50
         },
         {
           "raw_min": 0.4,
           "raw_max": 0.5,
-          "calibrated": 0.7845578231292517,
-          "sample_count": 196
+          "calibrated": 0.7842480752780154,
+          "sample_count": 167
         },
         {
           "raw_min": 0.5,
           "raw_max": 0.6000000000000001,
-          "calibrated": 0.7845578231292517,
-          "sample_count": 60
+          "calibrated": 0.7842480752780154,
+          "sample_count": 28
         },
         {
           "raw_min": 0.6000000000000001,
           "raw_max": 0.7000000000000001,
-          "calibrated": 0.7845578231292517,
-          "sample_count": 2
+          "calibrated": 0.7842480752780154,
+          "sample_count": 0
         },
         {
           "raw_min": 0.7000000000000001,
           "raw_max": 0.8,
-          "calibrated": 0.7845578231292517,
+          "calibrated": 0.7842480752780154,
           "sample_count": 0
         },
         {

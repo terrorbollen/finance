@@ -308,6 +308,8 @@ class TestSignalTimestamp:
         gen.min_volume_ratio = None
         gen.earnings_buffer_days = None
         gen.require_weekly_confirmation = False
+        gen.min_adx = None
+        gen.signal_threshold = None
         gen.atr_multiplier = 2.0
         gen.take_profit_atr_multiplier = 3.0
         gen.stop_loss_pct = 0.05
@@ -316,9 +318,12 @@ class TestSignalTimestamp:
         gen.directional_calibrator = None
 
         fake_model = MagicMock()
-        fake_model.predict.return_value = (
-            np.array([[0.80, 0.10, 0.10]]),
-            np.array([0]),
+        # predict_per_horizon returns (horizon_probs_list, horizon_classes_list, price_targets)
+        # horizon_probs_list: one (batch, 3) array per horizon head
+        # price_targets: (batch,) array
+        fake_model.predict_per_horizon.return_value = (
+            [np.array([[0.80, 0.10, 0.10]])],  # one head, BUY-confident
+            [np.array([0])],
             np.array([2.0]),
         )
         gen.model = fake_model
@@ -450,11 +455,13 @@ class TestCheckOod:
 def _make_gen_with_filters(
     min_volume_ratio: float | None = None,
     earnings_buffer_days: int | None = None,
+    min_adx: float | None = None,
 ) -> "SignalGenerator":
-    """Build a minimal SignalGenerator with S1 filter attributes set."""
+    """Build a minimal SignalGenerator with S1/S2 filter attributes set."""
     gen = SignalGenerator.__new__(SignalGenerator)
     gen.min_volume_ratio = min_volume_ratio
     gen.earnings_buffer_days = earnings_buffer_days
+    gen.min_adx = min_adx
     return gen
 
 

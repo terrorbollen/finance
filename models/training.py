@@ -442,6 +442,7 @@ class ModelTrainer:
                 buy_threshold=self.buy_threshold,
                 sell_threshold=self.sell_threshold,
                 prediction_horizons=self.prediction_horizons,
+                tickers=loaded_tickers,
             )
             cfg.save(config_path)
             print(f"Saved model config to {config_path}")

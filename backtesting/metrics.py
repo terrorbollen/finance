@@ -716,6 +716,13 @@ class MetricsCalculator:
         obs_ret_pct = float(np.mean(ret_arr <= obs_compounded_return) * 100)
         obs_sharpe_pct = float(np.mean(sharpe_arr <= obs_path_sharpe) * 100)
 
+        # Observed max drawdown from the actual trade sequence
+        obs_cum = np.cumsum(arr)
+        obs_running_max = np.maximum.accumulate(obs_cum)
+        obs_max_drawdown = float(np.min(obs_cum - obs_running_max))
+        # Lower pct is better: 10% means the actual DD was shallower than 90% of random orderings
+        obs_dd_pct = float(np.mean(dd_arr <= obs_max_drawdown) * 100)
+
         return MonteCarloResult(
             n_simulations=n_simulations,
             mean_total_return=float(np.mean(ret_arr)),
@@ -726,6 +733,7 @@ class MetricsCalculator:
             mean_max_drawdown=float(np.mean(dd_arr)),
             p5_max_drawdown=float(np.percentile(dd_arr, 5)),
             p95_max_drawdown=float(np.percentile(dd_arr, 95)),
+            observed_max_drawdown_pct=obs_dd_pct,
             mean_sharpe=float(np.mean(sharpe_arr)),
             p5_sharpe=float(np.percentile(sharpe_arr, 5)),
             p95_sharpe=float(np.percentile(sharpe_arr, 95)),
